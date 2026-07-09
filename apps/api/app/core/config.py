@@ -54,7 +54,8 @@ class Settings(BaseSettings):
         origins = [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
-            "https://opsledger.vercel.app",
+            "https://opsledger-app.vercel.app",
+            "https://opsledger-one.vercel.app",
             "https://opsledger-barujafe1s-projects.vercel.app",
         ]
         vercel_url = os.getenv("VERCEL_URL")

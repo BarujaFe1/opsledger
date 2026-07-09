@@ -17,8 +17,8 @@
   </p>
 
   <p>
-    <a href="https://opsledger.vercel.app">
-      <img alt="Live Demo" src="https://img.shields.io/badge/Live%20Demo-opsledger.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white" />
+    <a href="https://opsledger-app.vercel.app">
+      <img alt="Live Demo" src="https://img.shields.io/badge/Live%20Demo-opsledger--app.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white" />
     </a>
     <img alt="Next.js" src="https://img.shields.io/badge/Next.js-15-000000?style=for-the-badge&logo=nextdotjs" />
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-React-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
@@ -330,7 +330,7 @@ CSV export / Markdown-HTML report
 ## 🚀 Quick Start / Início Rápido
 
 ### Live Demo
-Demo pública one-click: **[https://opsledger.vercel.app](https://opsledger.vercel.app)** → **Rodar demo**.
+Demo pública one-click: **[https://opsledger-app.vercel.app](https://opsledger-app.vercel.app)** → **Rodar demo**.
 
 ### Pré-requisitos
 - **Node.js** v20 ou superior

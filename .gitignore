@@ -41,3 +41,6 @@ apps/api/opsledger.db
 
 # Local tooling caches
 .npm-cache/
+
+.vercel
+

@@ -23,9 +23,9 @@ O monorepo usa **Vercel Services** (`vercel.json`):
 
 1. Importe o repositório (root = raiz do monorepo, **não** `apps/web`).
 2. Não defina `NEXT_PUBLIC_API_URL` em produção (same-origin).
-3. Opcional: `CORS_ORIGINS=https://opsledger.vercel.app` (já há defaults no código).
+3. Opcional: `CORS_ORIGINS=https://opsledger-app.vercel.app` (já há defaults no código).
 4. Deploy: `vercel --prod` (ou Git integration).
-5. Alias limpo: `opsledger.vercel.app`.
+5. Alias canônico: `opsledger-app.vercel.app` (`opsledger.vercel.app` estava indisponível na conta).
 
 SQLite em produção usa `/tmp/opsledger.db` (efêmero por cold start — adequado para demo pública one-click). Dados demo vão empacotados em `apps/api/data/demo/`.
 
