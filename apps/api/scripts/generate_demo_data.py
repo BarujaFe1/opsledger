@@ -8,8 +8,14 @@ from pathlib import Path
 
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DEMO_DIR = REPO_ROOT / "data" / "demo"
+API_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = API_ROOT.parents[1]
+# Packaged with the API for Vercel; mirrored at repo root for docs/Docker.
+DEMO_DIRS = [
+    API_ROOT / "data" / "demo",
+    REPO_ROOT / "data" / "demo",
+]
+DEMO_DIR = DEMO_DIRS[0]
 
 PRODUCTS = [
     ("SKU-CAN-01", "Caneca Cerâmica 300ml", 39.9),
@@ -297,9 +303,12 @@ def generate(seed: int = 42) -> None:
     payments_df = pd.DataFrame(payments)
     stock_df = pd.DataFrame(stock)
 
-    orders_df.to_csv(DEMO_DIR / "orders.csv", index=False)
-    payments_df.to_csv(DEMO_DIR / "payments.csv", index=False)
-    stock_df.to_csv(DEMO_DIR / "stock_movements.csv", index=False)
+    for out_dir in DEMO_DIRS:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        orders_df.to_csv(out_dir / "orders.csv", index=False)
+        payments_df.to_csv(out_dir / "payments.csv", index=False)
+        stock_df.to_csv(out_dir / "stock_movements.csv", index=False)
+        print(f"wrote demo CSVs → {out_dir}")
 
     print(f"orders: {len(orders_df)}")
     print(f"payments: {len(payments_df)}")

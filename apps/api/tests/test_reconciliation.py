@@ -311,13 +311,13 @@ def client(tmp_path, monkeypatch):
 
 
 def test_health(client):
-    res = client.get("/health")
+    res = client.get("/api/health")
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
 
 
 def test_demo_endpoint(client):
-    res = client.post("/demo/run")
+    res = client.post("/api/demo/run")
     assert res.status_code == 200
     body = res.json()
     assert body["batch"]["status"] == "completed"

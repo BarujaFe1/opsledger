@@ -9,7 +9,6 @@ services:
       DATABASE_URL: sqlite:////data/opsledger.db
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     volumes:
-      - ./data:/app/data
       - api_db:/data
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
@@ -17,6 +16,8 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
       - "3000:3000"
     environment:

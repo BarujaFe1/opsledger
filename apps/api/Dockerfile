@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY scripts ./scripts
+COPY data ./data
 
-# Demo data is mounted from repo via compose; also copy fallback path expectation
 ENV PYTHONPATH=/app
 
 EXPOSE 8000

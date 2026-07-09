@@ -47,4 +47,5 @@ async def unhandled_exception_handler(_: Request, exc: Exception):
     )
 
 
-app.include_router(router)
+# Prefixed for Vercel same-origin rewrites (/api/* → FastAPI service).
+app.include_router(router, prefix="/api")

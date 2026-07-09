@@ -1,16 +1,35 @@
+from __future__ import annotations
+
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# apps/api/app/core/config.py -> repo root is parents[4]
-REPO_ROOT = Path(__file__).resolve().parents[4]
+# apps/api/app/core/config.py -> apps/api is parents[2]
 API_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = REPO_ROOT / "data"
-DEMO_DIR = DATA_DIR / "demo"
-PROCESSED_DIR = DATA_DIR / "processed"
-DEFAULT_DB_PATH = API_ROOT / "opsledger.db"
+REPO_ROOT = API_ROOT.parents[1]
+
+
+def _default_database_url() -> str:
+    # Vercel serverless FS is read-only except /tmp.
+    if os.getenv("VERCEL"):
+        return "sqlite:////tmp/opsledger.db"
+    return f"sqlite:///{(API_ROOT / 'opsledger.db').as_posix()}"
+
+
+def _default_demo_dir() -> Path:
+    packaged = API_ROOT / "data" / "demo"
+    if packaged.exists():
+        return packaged
+    return REPO_ROOT / "data" / "demo"
+
+
+def _default_processed_dir() -> Path:
+    if os.getenv("VERCEL"):
+        return Path("/tmp/opsledger_processed")
+    return API_ROOT / "data" / "processed"
 
 
 class Settings(BaseSettings):
@@ -22,17 +41,26 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "OpsLedger API"
-    database_url: str = Field(default=f"sqlite:///{DEFAULT_DB_PATH.as_posix()}", alias="DATABASE_URL")
-    cors_origins: str = Field(
-        default="http://localhost:3000,http://127.0.0.1:3000",
-        alias="CORS_ORIGINS",
-    )
-    demo_dir: Path = DEMO_DIR
-    processed_dir: Path = PROCESSED_DIR
+    database_url: str = Field(default_factory=_default_database_url, alias="DATABASE_URL")
+    cors_origins: str = Field(default="", alias="CORS_ORIGINS")
+    demo_dir: Path = Field(default_factory=_default_demo_dir)
+    processed_dir: Path = Field(default_factory=_default_processed_dir)
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        if self.cors_origins.strip():
+            return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+        origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://opsledger.vercel.app",
+            "https://opsledger-barujafe1s-projects.vercel.app",
+        ]
+        vercel_url = os.getenv("VERCEL_URL")
+        if vercel_url:
+            origins.append(f"https://{vercel_url}")
+        return origins
 
 
 @lru_cache

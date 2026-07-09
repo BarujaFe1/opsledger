@@ -17,6 +17,9 @@
   </p>
 
   <p>
+    <a href="https://opsledger.vercel.app">
+      <img alt="Live Demo" src="https://img.shields.io/badge/Live%20Demo-opsledger.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white" />
+    </a>
     <img alt="Next.js" src="https://img.shields.io/badge/Next.js-15-000000?style=for-the-badge&logo=nextdotjs" />
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-React-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
     <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" />
@@ -284,6 +287,8 @@ opsledger/
 │
 ├── docs/                            # Arquitetura, regras, dicionário, deploy
 ├── assets/                          # Ícone, hero, screenshots, social preview
+├── vercel.json                      # Vercel Services (web + FastAPI)
+├── start.bat                        # Sobe API + web no Windows
 ├── HANDOFF_PORTFOLIO.md             # Texto pronto para portfólio
 └── README.md                        # Esta documentação
 ```
@@ -324,12 +329,27 @@ CSV export / Markdown-HTML report
 
 ## 🚀 Quick Start / Início Rápido
 
+### Live Demo
+Demo pública one-click: **[https://opsledger.vercel.app](https://opsledger.vercel.app)** → **Rodar demo**.
+
 ### Pré-requisitos
 - **Node.js** v20 ou superior
 - **Python** 3.12+
 - **Git**
 
-### 1. Backend FastAPI (`apps/api`)
+### Opção 1 — Windows (`start.bat`)
+
+Na raiz do repositório:
+
+```bash
+.\start.bat
+```
+
+Sobe API (`8000`) + web (`3000`) e preserva o fluxo **Rodar demo** da home.
+
+### Opção 2 — Manual
+
+#### 1. Backend FastAPI (`apps/api`)
 
 ```bash
 cd apps/api
@@ -341,9 +361,9 @@ python scripts/generate_demo_data.py
 uvicorn app.main:app --reload --port 8000
 ```
 
-API: [http://127.0.0.1:8000](http://127.0.0.1:8000) · Health: `/health` · Docs: `/docs`
+API: [http://127.0.0.1:8000](http://127.0.0.1:8000) · Health: `/api/health` · Docs: `/docs`
 
-### 2. Frontend Next.js (`apps/web`)
+#### 2. Frontend Next.js (`apps/web`)
 
 ```bash
 cd apps/web
@@ -372,7 +392,7 @@ cd apps/api
 .venv\Scripts\python -m pytest -q
 ```
 
-Cobertura mínima: 7 regras da engine + `/health` + `/demo/run`.
+Cobertura mínima: 7 regras da engine + `/api/health` + `/api/demo/run`.
 
 ### Frontend (Vitest + build)
 

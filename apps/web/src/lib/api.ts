@@ -1,6 +1,13 @@
 import type { Dashboard, ImportPreview, Issue, IssueDetail, Report } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+// Empty string = same-origin (Vercel rewrites /api/* to the FastAPI service).
+// Locally, apps/web/.env.local should set NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+
+function apiUrl(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${API_BASE}${normalized}`;
+}
 
 async function parseError(res: Response): Promise<string> {
   try {
@@ -15,7 +22,7 @@ async function parseError(res: Response): Promise<string> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
     ...init,
     headers: {
       ...(init?.headers || {}),
@@ -28,7 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function runDemo(): Promise<ImportPreview> {
-  return request<ImportPreview>("/demo/run", { method: "POST" });
+  return request<ImportPreview>("/api/demo/run", { method: "POST" });
 }
 
 export async function uploadImport(files: {
@@ -40,11 +47,11 @@ export async function uploadImport(files: {
   form.append("orders", files.orders);
   form.append("payments", files.payments);
   form.append("stock_movements", files.stock_movements);
-  return request<ImportPreview>("/imports", { method: "POST", body: form });
+  return request<ImportPreview>("/api/imports", { method: "POST", body: form });
 }
 
 export async function getDashboard(batchId: number): Promise<Dashboard> {
-  return request<Dashboard>(`/imports/${batchId}/dashboard`);
+  return request<Dashboard>(`/api/imports/${batchId}/dashboard`);
 }
 
 export async function getIssues(
@@ -56,18 +63,18 @@ export async function getIssues(
     if (v) params.set(k, v);
   });
   const qs = params.toString();
-  return request<Issue[]>(`/imports/${batchId}/issues${qs ? `?${qs}` : ""}`);
+  return request<Issue[]>(`/api/imports/${batchId}/issues${qs ? `?${qs}` : ""}`);
 }
 
 export async function getIssue(issueId: number): Promise<IssueDetail> {
-  return request<IssueDetail>(`/issues/${issueId}`);
+  return request<IssueDetail>(`/api/issues/${issueId}`);
 }
 
 export async function patchIssue(
   issueId: number,
   body: { status: string; note?: string },
 ): Promise<IssueDetail> {
-  return request<IssueDetail>(`/issues/${issueId}`, {
+  return request<IssueDetail>(`/api/issues/${issueId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -75,11 +82,11 @@ export async function patchIssue(
 }
 
 export async function getReport(batchId: number): Promise<Report> {
-  return request<Report>(`/imports/${batchId}/report?format=markdown`);
+  return request<Report>(`/api/imports/${batchId}/report?format=markdown`);
 }
 
 export function exportIssuesUrl(batchId: number): string {
-  return `${API_BASE}/imports/${batchId}/export/issues.csv`;
+  return apiUrl(`/api/imports/${batchId}/export/issues.csv`);
 }
 
 export { API_BASE };

@@ -30,7 +30,7 @@ CSV (demo/upload)
 
 ## Fluxo de dados
 
-1. `POST /demo/run` ou `POST /imports` lê/valida três CSVs.
+1. `POST /api/demo/run` ou `POST /api/imports` lê/valida três CSVs.
 2. `process_import` cria o batch, persiste linhas e executa `run_reconciliation`.
 3. Issues são gravadas com tipo, severidade, impacto e ação recomendada.
 4. Dashboard agrega KPIs do batch + contagens por severidade/tipo + impacto por canal.
