@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+*.tsbuildinfo
+.npm-cache/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Data runtime
+data/processed/*
+!data/processed/.gitkeep
+apps/api/opsledger.db
+
+# Env / secrets
+.env.local
+.env.*.local
+!.env.example
+!apps/api/.env.example
+!apps/web/.env.example
+
+# Local tooling caches
+.npm-cache/
