@@ -323,3 +323,68 @@ def test_demo_endpoint(client):
     assert body["batch"]["status"] == "completed"
     assert body["batch"]["total_orders"] == 1
     assert "orders" in body
+
+
+def test_dashboard_resolve_recalculates_open_amounts(client, tmp_path):
+    """Upload a batch with missing_payment, resolve it, assert open KPIs drop."""
+    orders = (
+        "order_id,order_date,customer_name,customer_document_optional,channel,sku,product_name,"
+        "quantity,unit_price,gross_amount,discount_amount,net_amount,status\n"
+        "ORD-X,2026-06-01T10:00:00+00:00,Cliente X,,Shopify,SKU-A,Item,1,100,100,0,100,paid\n"
+    )
+    payments = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-FAIL,ORD-X,2026-06-01T11:00:00+00:00,100,pix,failed,TX-FAIL\n"
+    )
+    stock = (
+        "movement_id,sku,movement_type,quantity,movement_date,reference_order_id,notes\n"
+        "M1,SKU-A,in,5,2026-05-31T08:00:00+00:00,,\n"
+        "M2,SKU-A,out,1,2026-06-01T12:00:00+00:00,ORD-X,\n"
+    )
+    files = {
+        "orders": ("orders.csv", orders, "text/csv"),
+        "payments": ("payments.csv", payments, "text/csv"),
+        "stock_movements": ("stock.csv", stock, "text/csv"),
+    }
+    uploaded = client.post("/api/imports", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    batch_id = uploaded.json()["batch"]["id"]
+    assert uploaded.json()["batch"]["total_issues"] >= 1
+
+    dash = client.get(f"/api/imports/{batch_id}/dashboard")
+    assert dash.status_code == 200
+    body = dash.json()
+    assert body["open_issues_count"] >= 1
+    assert body["unreconciled_amount"] > 0
+
+    issues = client.get(f"/api/imports/{batch_id}/issues").json()
+    money = next(i for i in issues if i["issue_type"] == "missing_payment")
+    before_open = body["open_issues_count"]
+    before_unrec = body["unreconciled_amount"]
+
+    patched = client.patch(
+        f"/api/issues/{money['id']}",
+        json={"status": "resolved", "note": "pagamento localizado no gateway"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["status"] == "resolved"
+    assert patched.json()["history"]
+
+    dash2 = client.get(f"/api/imports/{batch_id}/dashboard").json()
+    assert dash2["open_issues_count"] == before_open - 1
+    assert dash2["unreconciled_amount"] < before_unrec
+
+
+def test_report_orders_by_business_severity(client):
+    demo = client.post("/api/demo/run")
+    batch_id = demo.json()["batch"]["id"]
+    report = client.get(f"/api/imports/{batch_id}/report?format=markdown")
+    assert report.status_code == 200
+    content = report.json()["content"]
+    assert "Relatório de Fechamento" in content
+    assert "Issues por severidade" in content
+
+
+def test_missing_batch_returns_404(client):
+    res = client.get("/api/imports/999999/dashboard")
+    assert res.status_code == 404

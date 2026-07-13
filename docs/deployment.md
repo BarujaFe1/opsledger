@@ -1,43 +1,38 @@
-# Deploy
+# Deploy — OpsLedger
 
-## Local (recomendado para demo)
+## Live Demo
 
-Na raiz do repositório:
+**https://opsledger-app.vercel.app** → **Rodar demo**
+
+> Nota: `opsledger.vercel.app` estava indisponível na conta; o alias canônico é `opsledger-app.vercel.app`.
+
+## Local
 
 ```powershell
 .\start.bat
 ```
 
-Ou manualmente: API na porta `8000`, web na `3000`. Sem credenciais externas.
+Ou manualmente:
 
-- Health: `http://127.0.0.1:8000/api/health`
-- Demo: `http://localhost:3000/wizard?mode=demo`
+1. API: `uvicorn app.main:app --reload --port 8000` em `apps/api`
+2. Web: `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000` + `npm run dev` em `apps/web`
 
-## Produção (Vercel — web + API no mesmo projeto)
+Health: `http://127.0.0.1:8000/api/health`
 
-O monorepo usa **Vercel Services** (`vercel.json`):
+## Vercel (produção)
+
+`vercel.json` define dois services:
 
 - `frontend` → `apps/web` (Next.js)
-- `backend` → `apps/api` (FastAPI, entrypoint `app.main:app`)
-- Rewrite: `/api/*` → backend; demais rotas → frontend
+- `backend` → `apps/api` (FastAPI `app.main:app`)
+- Rewrite: `/api/(.*)` → backend
 
-1. Importe o repositório (root = raiz do monorepo, **não** `apps/web`).
-2. Não defina `NEXT_PUBLIC_API_URL` em produção (same-origin).
-3. Opcional: `CORS_ORIGINS=https://opsledger-app.vercel.app` (já há defaults no código).
-4. Deploy: `vercel --prod` (ou Git integration).
-5. Alias canônico: `opsledger-app.vercel.app` (`opsledger.vercel.app` estava indisponível na conta).
+Checklist:
 
-SQLite em produção usa `/tmp/opsledger.db` (efêmero por cold start — adequado para demo pública one-click). Dados demo vão empacotados em `apps/api/data/demo/`.
-
-## Backend separado (Render / Railway) — opcional
-
-1. Root directory: `apps/api`.
-2. Build: `pip install -r requirements.txt`.
-3. Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-4. Variáveis:
-   - `DATABASE_URL` (SQLite persistente ou Postgres)
-   - `CORS_ORIGINS` com a URL do frontend
-5. No frontend Vercel, defina `NEXT_PUBLIC_API_URL=https://<sua-api>` (rotas já incluem `/api/...`).
+1. Root do projeto = raiz do monorepo (não `apps/web`).
+2. Em produção, **não** definir `NEXT_PUBLIC_API_URL` (same-origin).
+3. Desativar SSO/Deployment Protection se a demo for pública.
+4. Demo CSVs em `apps/api/data/demo/`.
 
 ## Docker
 
@@ -45,16 +40,13 @@ SQLite em produção usa `/tmp/opsledger.db` (efêmero por cold start — adequa
 docker compose up --build
 ```
 
-- API: `http://localhost:8000/api/health`
-- Web: `http://localhost:3000`
+## Variáveis
 
-Para Postgres, veja `docs/architecture.md`.
+Ver `.env.example`, `apps/api/.env.example`, `apps/web/.env.example`.
 
-## Checklist pré-deploy
+## Segurança da demo pública
 
-- [ ] `pytest` passando
-- [ ] `/api/health` ok
-- [ ] `/api/demo/run` ok
-- [ ] CORS liberado para o domínio do front (ou same-origin)
-- [ ] Sem `.env` com segredos commitado
-- [ ] Screenshots atualizados (opcional)
+- Sem autenticação (MVP).
+- SQLite `/tmp` efêmero.
+- Não enviar dados reais de clientes.
+- 500s não vazam stack trace para o cliente.

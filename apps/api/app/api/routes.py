@@ -51,7 +51,7 @@ def demo_run(db: Session = Depends(get_db)) -> ImportPreviewOut:
     except CsvValidationError as exc:
         raise _http_from_validation(exc) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail={"message": f"Falha ao rodar demo: {exc}", "code": "demo_failed"}) from exc
+        raise HTTPException(status_code=500, detail={"message": "Falha ao rodar demo.", "code": "demo_failed"}) from exc
     return ImportPreviewOut(
         batch=ImportBatchOut.model_validate(batch),
         orders=PreviewRow(**preview["orders"]),
@@ -79,7 +79,7 @@ async def create_import(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500,
-            detail={"message": f"Falha no processamento: {exc}", "code": "import_failed"},
+            detail={"message": "Falha no processamento da importação.", "code": "import_failed"},
         ) from exc
     return ImportPreviewOut(
         batch=ImportBatchOut.model_validate(batch),

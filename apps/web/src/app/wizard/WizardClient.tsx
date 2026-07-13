@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { runDemo, uploadImport } from "@/lib/api";
+import { rememberBatchId } from "@/lib/routing";
 import type { ImportPreview } from "@/types";
 
 type Mode = "choose" | "demo" | "upload" | "preview";
@@ -19,6 +20,7 @@ export default function WizardClient() {
   const [ordersFile, setOrdersFile] = useState<File | null>(null);
   const [paymentsFile, setPaymentsFile] = useState<File | null>(null);
   const [stockFile, setStockFile] = useState<File | null>(null);
+  const [demoNonce, setDemoNonce] = useState(0);
 
   useEffect(() => {
     if (initial === "demo") setMode("demo");
@@ -36,10 +38,12 @@ export default function WizardClient() {
         if (!cancelled) {
           setPreview(result);
           setMode("preview");
-          sessionStorage.setItem("opsledger_batch_id", String(result.batch.id));
+          rememberBatchId(result.batch.id);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Falha ao rodar demo");
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Falha ao rodar demo");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -47,7 +51,7 @@ export default function WizardClient() {
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, [mode, demoNonce]);
 
   const canUpload = useMemo(
     () => Boolean(ordersFile && paymentsFile && stockFile),
@@ -66,7 +70,7 @@ export default function WizardClient() {
       });
       setPreview(result);
       setMode("preview");
-      sessionStorage.setItem("opsledger_batch_id", String(result.batch.id));
+      rememberBatchId(result.batch.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha no upload");
     } finally {
@@ -74,19 +78,31 @@ export default function WizardClient() {
     }
   }
 
+  function retryDemo() {
+    setError(null);
+    setPreview(null);
+    setMode("demo");
+    setDemoNonce((n) => n + 1);
+  }
+
   return (
     <div className="mx-auto max-w-4xl px-5 py-12">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Wizard</p>
       <h1 className="mt-2 font-display text-4xl text-ink-900">Carregar dados</h1>
       <p className="mt-3 text-ink-600 max-w-2xl">
-        Use a demo sintética (150 pedidos, divergências intencionais) ou importe seus CSVs de pedidos, pagamentos e estoque.
+        Use a demo sintética (≈150 pedidos, divergências intencionais) ou importe seus CSVs de pedidos, pagamentos e
+        estoque.
       </p>
 
       {mode === "choose" && (
         <div className="mt-10 grid sm:grid-cols-2 gap-4">
           <button
             type="button"
-            onClick={() => setMode("demo")}
+            onClick={() => {
+              setError(null);
+              setMode("demo");
+              setDemoNonce((n) => n + 1);
+            }}
             className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
           >
             <p className="font-display text-2xl">Rodar demo</p>
@@ -128,7 +144,30 @@ export default function WizardClient() {
         </div>
       )}
 
-      {error && <StateBox tone="error" title="Não foi possível processar" body={error} />}
+      {error && (
+        <div>
+          <StateBox tone="error" title="Não foi possível processar" body={error} />
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={retryDemo}
+              className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white"
+            >
+              Tentar demo de novo
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setMode("choose");
+              }}
+              className="text-sm text-ink-600 underline"
+            >
+              Voltar às opções
+            </button>
+          </div>
+        </div>
+      )}
 
       {mode === "preview" && preview && (
         <div className="mt-8 space-y-6">
@@ -209,7 +248,7 @@ function StateBox({
     success: "border-accent/30 bg-accent-muted/60 text-ink-900",
   }[tone];
   return (
-    <div className={`mt-8 rounded-2xl border p-5 ${styles}`}>
+    <div className={`mt-8 rounded-2xl border p-5 ${styles}`} role={tone === "error" ? "alert" : undefined}>
       <p className="font-semibold">{title}</p>
       <p className={`mt-1 text-sm ${tone === "loading" ? "text-ink-600 animate-pulse-soft" : ""}`}>{body}</p>
     </div>
