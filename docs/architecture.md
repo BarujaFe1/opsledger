@@ -35,7 +35,7 @@ CSV (demo/upload)
 
 - Sem autenticação / multi-tenant.
 - Estoque = saldo simulado do batch (não WMS).
-- Dinheiro ainda em `float` (trade-off de velocidade; roadmap: Decimal).
+- Dinheiro em `Decimal` / `Numeric(18, 2)` no domínio (JSON ainda serializa número quantizado).
 - Sem conciliação bancária nem integrações de marketplace.
 
 ## Migração Postgres (v1.1)

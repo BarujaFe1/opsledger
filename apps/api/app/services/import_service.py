@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.money import ZERO, as_json_number, money
 from app.models import (
     ImportBatch,
     IssueStatusHistory,
@@ -16,7 +17,7 @@ from app.models import (
     ReconciliationIssue,
     StockMovement,
 )
-from app.reconciliation.engine import compute_amounts, run_reconciliation
+from app.reconciliation.engine import MONEY_ISSUE_TYPES, compute_amounts, run_reconciliation
 from app.services.csv_validation import (
     CsvValidationError,
     preview_df,
@@ -50,10 +51,10 @@ def _persist_frames(
                 sku=str(row["sku"]),
                 product_name=str(row["product_name"]),
                 quantity=int(row["quantity"]),
-                unit_price=float(row["unit_price"]),
-                gross_amount=float(row["gross_amount"]),
-                discount_amount=float(row["discount_amount"]),
-                net_amount=float(row["net_amount"]),
+                unit_price=money(row["unit_price"]),
+                gross_amount=money(row["gross_amount"]),
+                discount_amount=money(row["discount_amount"]),
+                net_amount=money(row["net_amount"]),
                 status=str(row["status"]),
             )
         )
@@ -64,7 +65,7 @@ def _persist_frames(
                 payment_id=str(row["payment_id"]),
                 order_id=str(row["order_id"]),
                 paid_at=to_naive_utc(row["paid_at"]),
-                amount=float(row["amount"]),
+                amount=money(row["amount"]),
                 method=str(row["method"]),
                 status=str(row["status"]),
                 transaction_reference=(
@@ -176,7 +177,7 @@ def run_demo(db: Session) -> tuple[ImportBatch, dict]:
     stock_df = validate_stock(stock_path)
     return process_import(
         db,
-        source_name="demo",
+        source_name="demo:monthly_closing_2026_06",
         orders_df=orders_df,
         payments_df=payments_df,
         stock_df=stock_df,
@@ -217,12 +218,11 @@ def get_batch_or_404(db: Session, batch_id: int) -> ImportBatch:
 
 
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-MONEY_ISSUE_TYPES = {"missing_payment", "orphan_payment", "amount_mismatch"}
 
 
-def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount: float) -> tuple[float, float]:
+def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount) -> tuple:
     """Recompute open financial exposure from issues still open/reviewing."""
-    unreconciled = 0.0
+    unreconciled = ZERO
     seen: set[tuple[str, str]] = set()
     for issue in issues:
         if issue.status not in {"open", "reviewing"}:
@@ -233,10 +233,12 @@ def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount: fl
         if key in seen:
             continue
         seen.add(key)
-        unreconciled += float(issue.amount_impact or 0)
-    if total_amount:
-        unreconciled = min(unreconciled, total_amount)
-    reconciled = max(total_amount - unreconciled, 0.0)
+        unreconciled += money(issue.amount_impact)
+    unreconciled = money(unreconciled)
+    total = money(total_amount)
+    if total > ZERO:
+        unreconciled = min(unreconciled, total)
+    reconciled = money(max(total - unreconciled, ZERO))
     return reconciled, unreconciled
 
 
@@ -267,13 +269,13 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
             channel = issue.entity_id
         if not channel:
             continue
-        bucket = channel_stats.setdefault(channel, {"impact": 0.0, "issues": 0})
-        bucket["impact"] += float(issue.amount_impact or 0)
+        bucket = channel_stats.setdefault(channel, {"impact": ZERO, "issues": 0})
+        bucket["impact"] += money(issue.amount_impact or 0)
         bucket["issues"] += 1
 
     top_channels = sorted(
         [
-            {"channel": k, "impact": v["impact"], "issues": int(v["issues"])}
+            {"channel": k, "impact": as_json_number(v["impact"]), "issues": int(v["issues"])}
             for k, v in channel_stats.items()
         ],
         key=lambda x: x["impact"],
@@ -293,15 +295,15 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
     else:
         next_action = "Todas as issues foram resolvidas ou ignoradas. Fechamento pronto para revisão final."
 
-    total_amount = float(batch.total_amount or 0)
+    total_amount = money(batch.total_amount or 0)
     reconciled, unreconciled = _open_money_unreconciled(issues, total_amount)
 
     return {
         "batch_id": batch.id,
         "total_orders": batch.total_orders,
-        "total_order_amount": total_amount,
-        "reconciled_amount": reconciled,
-        "unreconciled_amount": unreconciled,
+        "total_order_amount": as_json_number(total_amount),
+        "reconciled_amount": as_json_number(reconciled),
+        "unreconciled_amount": as_json_number(unreconciled),
         "total_issues": batch.total_issues,
         "open_issues_count": len(open_issues),
         "issues_by_severity": [
@@ -352,7 +354,7 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
     )
     issues_sorted = sorted(
         issues,
-        key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(i.amount_impact or 0)),
+        key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(money(i.amount_impact or 0))),
     )
     lines = [
         f"# Relatório de Fechamento Operacional — Batch #{batch.id}",
@@ -380,8 +382,9 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
         lines.append("- Nenhum problema encontrado.")
     lines.extend(["", "## Próxima melhor ação", "", dash.get("next_best_action") or "—", "", "## Top issues", ""])
     for issue in issues_sorted[:15]:
+        impact = money(issue.amount_impact or 0)
         lines.append(
-            f"- **[{issue.severity}] {issue.title}** — impacto R$ {issue.amount_impact:.2f} — status `{issue.status}`"
+            f"- **[{issue.severity}] {issue.title}** — impacto R$ {impact:.2f} — status `{issue.status}`"
         )
         lines.append(f"  - {issue.recommended_action}")
     if not issues:

@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.money import money
 from app.db.session import Base, get_db
 from app.main import app
 from app.reconciliation.engine import (
@@ -63,7 +64,7 @@ def test_missing_payment():
     assert len(issues) == 1
     assert issues[0].issue_type == "missing_payment"
     assert issues[0].severity == "high"
-    assert issues[0].amount_impact == 100.0
+    assert issues[0].amount_impact == money("100.00")
 
 
 def test_orphan_payment():
@@ -104,7 +105,7 @@ def test_amount_mismatch():
     assert len(issues) == 1
     assert issues[0].issue_type == "amount_mismatch"
     assert issues[0].severity == "high"
-    assert abs(issues[0].amount_impact - 30.0) < 0.01
+    assert issues[0].amount_impact == money("30.00")
 
 
 def test_duplicate_order():
@@ -321,6 +322,7 @@ def test_demo_endpoint(client):
     assert res.status_code == 200
     body = res.json()
     assert body["batch"]["status"] == "completed"
+    assert body["batch"]["source_name"] == "demo:monthly_closing_2026_06"
     assert body["batch"]["total_orders"] == 1
     assert "orders" in body
 
