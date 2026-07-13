@@ -3,6 +3,8 @@
 **Branch:** `chore/portfolio-quality-pass`  
 **Date:** 2026-07-13
 
+> Atualização da elevação seguinte: ver `docs/PORTFOLIO_HANDOFF.md` (Decimal + E2E + cenário mensal).
+
 ---
 
 ## O que foi encontrado
