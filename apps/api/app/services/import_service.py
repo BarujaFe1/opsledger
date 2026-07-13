@@ -83,7 +83,11 @@ def _persist_frames(
                 movement_type=str(row["movement_type"]),
                 quantity=int(row["quantity"]),
                 movement_date=to_naive_utc(row["movement_date"]),
-                reference_order_id=row.get("reference_order_id"),
+                reference_order_id=(
+                    None
+                    if pd.isna(row.get("reference_order_id"))
+                    else str(row.get("reference_order_id"))
+                ),
                 notes=None if pd.isna(row.get("notes")) else str(row.get("notes")),
             )
         )
@@ -212,6 +216,30 @@ def get_batch_or_404(db: Session, batch_id: int) -> ImportBatch:
     return batch
 
 
+SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+MONEY_ISSUE_TYPES = {"missing_payment", "orphan_payment", "amount_mismatch"}
+
+
+def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount: float) -> tuple[float, float]:
+    """Recompute open financial exposure from issues still open/reviewing."""
+    unreconciled = 0.0
+    seen: set[tuple[str, str]] = set()
+    for issue in issues:
+        if issue.status not in {"open", "reviewing"}:
+            continue
+        if issue.issue_type not in MONEY_ISSUE_TYPES:
+            continue
+        key = (issue.issue_type, issue.entity_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        unreconciled += float(issue.amount_impact or 0)
+    if total_amount:
+        unreconciled = min(unreconciled, total_amount)
+    reconciled = max(total_amount - unreconciled, 0.0)
+    return reconciled, unreconciled
+
+
 def build_dashboard(db: Session, batch: ImportBatch) -> dict:
     issues = (
         db.query(ReconciliationIssue)
@@ -226,10 +254,12 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
         by_sev[issue.severity] = by_sev.get(issue.severity, 0) + 1
         by_type[issue.issue_type] = by_type.get(issue.issue_type, 0) + 1
 
-    # channel impact from order-linked issues
+    # channel impact from order-linked issues (open + reviewing only for actionable impact)
     order_channel = {o.order_id: o.channel for o in orders}
     channel_stats: dict[str, dict[str, float]] = {}
     for issue in issues:
+        if issue.status not in {"open", "reviewing"}:
+            continue
         channel = None
         if issue.entity_type == "order":
             channel = order_channel.get(issue.entity_id)
@@ -251,22 +281,33 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
     )[:5]
 
     next_action = None
-    priority = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     open_issues = [i for i in issues if i.status in {"open", "reviewing"}]
     if open_issues:
-        top = sorted(open_issues, key=lambda i: (priority.get(i.severity, 9), -i.amount_impact))[0]
+        top = sorted(
+            open_issues,
+            key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -i.amount_impact),
+        )[0]
         next_action = f"{top.title} — {top.recommended_action}"
     elif not issues:
         next_action = "Nenhum problema encontrado. Fechamento operacional pronto para revisão final."
+    else:
+        next_action = "Todas as issues foram resolvidas ou ignoradas. Fechamento pronto para revisão final."
+
+    total_amount = float(batch.total_amount or 0)
+    reconciled, unreconciled = _open_money_unreconciled(issues, total_amount)
 
     return {
         "batch_id": batch.id,
         "total_orders": batch.total_orders,
-        "total_order_amount": batch.total_amount,
-        "reconciled_amount": batch.reconciled_amount,
-        "unreconciled_amount": batch.unreconciled_amount,
+        "total_order_amount": total_amount,
+        "reconciled_amount": reconciled,
+        "unreconciled_amount": unreconciled,
         "total_issues": batch.total_issues,
-        "issues_by_severity": [{"severity": k, "count": v} for k, v in sorted(by_sev.items())],
+        "open_issues_count": len(open_issues),
+        "issues_by_severity": [
+            {"severity": k, "count": v}
+            for k, v in sorted(by_sev.items(), key=lambda kv: SEVERITY_RANK.get(kv[0], 9))
+        ],
         "issues_by_type": [{"issue_type": k, "count": v} for k, v in sorted(by_type.items())],
         "top_channels_with_divergence": top_channels,
         "next_best_action": next_action,
@@ -307,8 +348,11 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
     issues = (
         db.query(ReconciliationIssue)
         .filter(ReconciliationIssue.batch_id == batch.id)
-        .order_by(ReconciliationIssue.severity.desc(), ReconciliationIssue.amount_impact.desc())
         .all()
+    )
+    issues_sorted = sorted(
+        issues,
+        key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(i.amount_impact or 0)),
     )
     lines = [
         f"# Relatório de Fechamento Operacional — Batch #{batch.id}",
@@ -321,9 +365,10 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
         "",
         f"- Pedidos: **{dash['total_orders']}**",
         f"- Valor total: **R$ {dash['total_order_amount']:.2f}**",
-        f"- Valor conciliado: **R$ {dash['reconciled_amount']:.2f}**",
-        f"- Valor em divergência: **R$ {dash['unreconciled_amount']:.2f}**",
-        f"- Issues: **{dash['total_issues']}**",
+        f"- Valor conciliado (issues abertas): **R$ {dash['reconciled_amount']:.2f}**",
+        f"- Valor em divergência (issues abertas): **R$ {dash['unreconciled_amount']:.2f}**",
+        f"- Issues totais: **{dash['total_issues']}**",
+        f"- Issues abertas/em revisão: **{dash['open_issues_count']}**",
         "",
         "## Issues por severidade",
         "",
@@ -334,7 +379,7 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
     else:
         lines.append("- Nenhum problema encontrado.")
     lines.extend(["", "## Próxima melhor ação", "", dash.get("next_best_action") or "—", "", "## Top issues", ""])
-    for issue in issues[:15]:
+    for issue in issues_sorted[:15]:
         lines.append(
             f"- **[{issue.severity}] {issue.title}** — impacto R$ {issue.amount_impact:.2f} — status `{issue.status}`"
         )

@@ -5,12 +5,13 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { SeverityBadge, StatusBadge } from "@/components/Badge";
 import { getIssue, patchIssue } from "@/lib/api";
-import { formatBRL, issueTypeLabel } from "@/lib/utils";
+import { parsePositiveInt, rememberBatchId } from "@/lib/routing";
+import { formatBRL, issueTypeLabel, statusLabel, STATUS_OPTIONS } from "@/lib/utils";
 import type { IssueDetail } from "@/types";
 
 export default function IssueDetailPage() {
   const params = useParams();
-  const issueId = Number(params.issueId);
+  const issueId = parsePositiveInt(params.issueId);
   const [issue, setIssue] = useState<IssueDetail | null>(null);
   const [status, setStatus] = useState("open");
   const [note, setNote] = useState("");
@@ -20,7 +21,11 @@ export default function IssueDetailPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!issueId) return;
+    if (issueId == null) {
+      setLoading(false);
+      setError("ID de issue inválido.");
+      return;
+    }
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -30,6 +35,7 @@ export default function IssueDetailPage() {
           setIssue(data);
           setStatus(data.status);
           setNote(data.resolution_note || "");
+          rememberBatchId(data.batch_id);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Erro ao carregar issue");
@@ -50,7 +56,7 @@ export default function IssueDetailPage() {
     try {
       const updated = await patchIssue(issue.id, { status, note: note || undefined });
       setIssue(updated);
-      setMessage("Status atualizado.");
+      setMessage("Status atualizado. O dashboard passa a refletir apenas issues financeiras ainda abertas.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao atualizar");
     } finally {
@@ -58,9 +64,24 @@ export default function IssueDetailPage() {
     }
   }
 
-  if (loading) return <div className="mx-auto max-w-3xl px-5 py-12 text-ink-500">Carregando detalhe…</div>;
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-3xl px-5 py-12 text-ink-500" role="status">
+        Carregando detalhe…
+      </div>
+    );
+  }
   if (error && !issue) {
-    return <div className="mx-auto max-w-3xl px-5 py-12 text-red-700">{error}</div>;
+    return (
+      <div className="mx-auto max-w-3xl px-5 py-12">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-700" role="alert">
+          {error}
+        </div>
+        <Link href="/wizard?mode=demo" className="mt-4 inline-block text-sm text-accent underline">
+          Rodar demo
+        </Link>
+      </div>
+    );
   }
   if (!issue) return null;
 
@@ -96,10 +117,11 @@ export default function IssueDetailPage() {
             onChange={(e) => setStatus(e.target.value)}
             className="mt-1 w-full rounded-xl border border-ink-200 px-3 py-2"
           >
-            <option value="open">open</option>
-            <option value="reviewing">reviewing</option>
-            <option value="resolved">resolved</option>
-            <option value="ignored">ignored</option>
+            {STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </label>
         <label className="block text-sm">
@@ -132,7 +154,7 @@ export default function IssueDetailPage() {
               <li key={h.id} className="relative">
                 <span className="absolute -left-[1.35rem] top-1.5 h-2.5 w-2.5 rounded-full bg-accent" />
                 <p className="text-sm font-medium text-ink-800">
-                  {h.previous_status} → {h.new_status}
+                  {statusLabel(h.previous_status)} → {statusLabel(h.new_status)}
                 </p>
                 <p className="text-xs text-ink-500">{new Date(h.changed_at).toLocaleString("pt-BR")}</p>
                 {h.note ? <p className="mt-1 text-sm text-ink-600">{h.note}</p> : null}

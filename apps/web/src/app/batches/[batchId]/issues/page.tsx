@@ -12,12 +12,24 @@ import {
 } from "@tanstack/react-table";
 import { SeverityBadge, StatusBadge } from "@/components/Badge";
 import { getIssues } from "@/lib/api";
-import { formatBRL, issueTypeLabel } from "@/lib/utils";
+import { parsePositiveInt, rememberBatchId } from "@/lib/routing";
+import { formatBRL, issueTypeLabel, SEVERITY_OPTIONS, STATUS_OPTIONS } from "@/lib/utils";
 import type { Issue } from "@/types";
+
+const ISSUE_TYPE_OPTIONS = [
+  { value: "", label: "Todos" },
+  { value: "missing_payment", label: "Pagamento ausente" },
+  { value: "orphan_payment", label: "Pagamento órfão" },
+  { value: "amount_mismatch", label: "Divergência de valor" },
+  { value: "duplicate_order", label: "Pedido duplicado" },
+  { value: "missing_stock_out", label: "Baixa de estoque ausente" },
+  { value: "negative_stock", label: "Estoque negativo" },
+  { value: "channel_standardization", label: "Canal não padronizado" },
+];
 
 export default function IssuesPage() {
   const params = useParams();
-  const batchId = Number(params.batchId);
+  const batchId = parsePositiveInt(params.batchId);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +39,12 @@ export default function IssuesPage() {
   const [channel, setChannel] = useState("");
 
   useEffect(() => {
-    if (!batchId) return;
+    if (batchId == null) {
+      setLoading(false);
+      setError("ID de batch inválido.");
+      return;
+    }
+    rememberBatchId(batchId);
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -98,11 +115,15 @@ export default function IssuesPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Issues Register</p>
-          <h1 className="mt-2 font-display text-4xl text-ink-900">Divergências do batch #{batchId}</h1>
+          <h1 className="mt-2 font-display text-4xl text-ink-900">
+            Divergências {batchId != null ? `do batch #${batchId}` : ""}
+          </h1>
         </div>
-        <Link href={`/batches/${batchId}`} className="text-sm text-ink-600 hover:text-ink-900">
-          ← Dashboard
-        </Link>
+        {batchId != null ? (
+          <Link href={`/batches/${batchId}`} className="text-sm text-ink-600 hover:text-ink-900">
+            ← Dashboard
+          </Link>
+        ) : null}
       </div>
 
       <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -110,28 +131,14 @@ export default function IssuesPage() {
           label="Severidade"
           value={severity}
           onChange={setSeverity}
-          options={["", "critical", "high", "medium", "low"]}
+          options={[{ value: "", label: "Todas" }, ...SEVERITY_OPTIONS]}
         />
-        <Select
-          label="Tipo"
-          value={issueType}
-          onChange={setIssueType}
-          options={[
-            "",
-            "missing_payment",
-            "orphan_payment",
-            "amount_mismatch",
-            "duplicate_order",
-            "missing_stock_out",
-            "negative_stock",
-            "channel_standardization",
-          ]}
-        />
+        <Select label="Tipo" value={issueType} onChange={setIssueType} options={ISSUE_TYPE_OPTIONS} />
         <Select
           label="Status"
           value={status}
           onChange={setStatus}
-          options={["", "open", "reviewing", "resolved", "ignored"]}
+          options={[{ value: "", label: "Todos" }, ...STATUS_OPTIONS]}
         />
         <label className="block text-sm">
           <span className="text-ink-600">Canal</span>
@@ -145,9 +152,18 @@ export default function IssuesPage() {
       </div>
 
       {loading ? (
-        <p className="mt-8 text-ink-500 animate-pulse-soft">Carregando issues…</p>
+        <p className="mt-8 text-ink-500 animate-pulse-soft" role="status">
+          Carregando issues…
+        </p>
       ) : error ? (
-        <div className="mt-8 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-900">{error}</div>
+        <div className="mt-8 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-900" role="alert">
+          {error}
+          <div className="mt-3">
+            <Link href="/wizard?mode=demo" className="text-sm underline">
+              Rodar demo
+            </Link>
+          </div>
+        </div>
       ) : issues.length === 0 ? (
         <div className="mt-8 rounded-2xl border border-dashed border-ink-300 bg-white/70 p-8 text-center">
           <p className="font-display text-2xl text-ink-900">Nenhum problema encontrado</p>
@@ -194,7 +210,7 @@ function Select({
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: readonly { value: string; label: string }[] | { value: string; label: string }[];
 }) {
   return (
     <label className="block text-sm">
@@ -205,8 +221,8 @@ function Select({
         className="mt-1 w-full rounded-xl border border-ink-200 bg-white px-3 py-2"
       >
         {options.map((opt) => (
-          <option key={opt || "all"} value={opt}>
-            {opt || "Todos"}
+          <option key={opt.value || "all"} value={opt.value}>
+            {opt.label}
           </option>
         ))}
       </select>

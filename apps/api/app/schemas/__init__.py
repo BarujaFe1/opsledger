@@ -88,6 +88,7 @@ class DashboardOut(BaseModel):
     reconciled_amount: float
     unreconciled_amount: float
     total_issues: int
+    open_issues_count: int = 0
     issues_by_severity: list[SeverityCount]
     issues_by_type: list[TypeCount]
     top_channels_with_divergence: list[ChannelImpact]

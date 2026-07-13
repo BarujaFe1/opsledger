@@ -394,13 +394,17 @@ cd apps/api
 
 Cobertura mínima: 7 regras da engine + `/api/health` + `/api/demo/run`.
 
-### Frontend (Vitest + build)
+### Frontend (Vitest + typecheck + build)
 
 ```bash
 cd apps/web
 npm test
+npm run typecheck
+npm run lint
 npm run build
 ```
+
+CI: `.github/workflows/ci.yml` (pytest + vitest + lint + typecheck + build).
 
 ---
 
@@ -423,7 +427,8 @@ Detalhamento: [`docs/reconciliation-rules.md`](docs/reconciliation-rules.md).
 ## 🛡️ Limitações Honestas / Honest Limitations
 
 * Sem autenticação, multiempresa ou permissões avançadas
-* SQLite single-user no MVP
+* SQLite single-user no MVP · no Vercel o DB é `/tmp` (demo efêmera)
+* Dinheiro ainda em `float` (roadmap: `Decimal`) — KPIs abertos recalculam ao resolver issues
 * Estoque é **simulação de saldo do batch**, não WMS
 * Sem integração real com marketplace/gateway/banco
 * Escopo deliberadamente fora de ERP / emissão fiscal / billing
@@ -455,11 +460,36 @@ O OpsLedger demonstra competências críticas para **Analytics Engineering, Data
 ## 📚 Documentação Complementar
 
 - [`HANDOFF_PORTFOLIO.md`](HANDOFF_PORTFOLIO.md) — textos prontos para portfólio, LinkedIn e entrevista
-- [`docs/architecture.md`](docs/architecture.md) — arquitetura e migração PostgreSQL
+- [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) — auditoria do quality pass
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — o que mudou neste pass
+- [`docs/architecture.md`](docs/architecture.md) — arquitetura
+- [`docs/TECHNICAL_DECISIONS.md`](docs/TECHNICAL_DECISIONS.md) — ADRs e trade-offs
+- [`docs/TESTING.md`](docs/TESTING.md) — pirâmide de testes
 - [`docs/reconciliation-rules.md`](docs/reconciliation-rules.md) — regras detalhadas
 - [`docs/data-dictionary.md`](docs/data-dictionary.md) — tabelas e schemas CSV
 - [`docs/demo-story.md`](docs/demo-story.md) — narrativa da demo
-- [`docs/deployment.md`](docs/deployment.md) — Vercel / Render / Docker
+- [`docs/deployment.md`](docs/deployment.md) — Vercel / Docker / local
+
+---
+
+## 💼 O que este projeto demonstra
+
+- **Produto de dados aplicado** a uma dor operacional real (fechamento com planilhas).
+- **Engine testável** com regras explícitas (pytest) — não só dashboard.
+- **Full-stack coerente:** validação → batch → KPIs → investigação → status → export.
+- **Honestidade de escopo:** não é ERP, WMS nem conciliação bancária.
+- **DX de portfólio:** demo one-click, CI, docs de entrevista, deploy público.
+
+---
+
+## 🎤 Como eu apresentaria em entrevista
+
+1. **30s — dor:** Marina fecha a semana com 3 CSVs que não batem.
+2. **Demo viva:** home → Rodar demo → dashboard (divergência + próxima ação).
+3. **Issue crítica:** abrir detalhe, explicar a regra e a ação recomendada.
+4. **Código:** abrir `engine.py` + um teste pytest — destacar pureza das regras.
+5. **Trade-offs:** float money, SQLite `/tmp`, sem auth — e o que seria v1.1 (Decimal, Postgres, workspace).
+6. **Posicionamento:** Analytics Engineering / Ops Analytics, não “fintech platform”.
 
 ---
 
