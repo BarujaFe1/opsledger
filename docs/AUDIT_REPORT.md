@@ -102,7 +102,7 @@ A revisão encontrou **gaps reais** que enfraquecem a credibilidade sob escrutí
 - [x] Docs criadas/atualizadas
 - [x] README portfolio-ready
 - [x] Build/testes verdes
-- [ ] Commit + push
+- [x] Commit + push
 
 ---
 
