@@ -54,6 +54,8 @@ class Settings(BaseSettings):
         origins = [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:3100",
+            "http://127.0.0.1:3100",
             "https://opsledger-app.vercel.app",
             "https://opsledger-one.vercel.app",
             "https://opsledger-barujafe1s-projects.vercel.app",

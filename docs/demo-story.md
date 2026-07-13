@@ -18,12 +18,14 @@ Na última semana:
 
 ## Jornada na demo
 
-1. Abre OpsLedger e clica **Rodar demo**.
+1. Abre OpsLedger e clica **Rodar demo** (batch `demo:monthly_closing_2026_06`).
 2. Vê preview dos três arquivos e o batch concluído.
-3. No dashboard, identifica valor em divergência e a próxima melhor ação (geralmente estoque crítico).
+3. No dashboard, identifica valor em divergência (Decimal) e a próxima melhor ação.
 4. Filtra issues por severidade `high`/`critical`.
 5. Abre uma issue, marca como `reviewing`, adiciona nota.
 6. Exporta CSV para o gestor e gera o relatório markdown de fechamento.
+
+Detalhes do cenário: [`docs/scenarios/monthly_closing.md`](scenarios/monthly_closing.md).
 
 ## Mensagem de portfólio
 

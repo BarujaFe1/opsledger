@@ -108,6 +108,7 @@ export default function BatchDashboardPage() {
         <div className="flex flex-wrap gap-2">
           <Link
             href={`/batches/${batchId}/issues`}
+            data-testid="link-issues"
             className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white"
           >
             Issues Register
@@ -121,6 +122,7 @@ export default function BatchDashboardPage() {
           <button
             type="button"
             onClick={loadReport}
+            data-testid="btn-report"
             className="rounded-full border border-ink-300 bg-white px-4 py-2 text-sm font-semibold text-ink-800"
           >
             Relatório
@@ -186,7 +188,7 @@ export default function BatchDashboardPage() {
       </div>
 
       {showReport && report ? (
-        <div className="mt-8 rounded-2xl border border-ink-200 bg-white p-5">
+        <div className="mt-8 rounded-2xl border border-ink-200 bg-white p-5" data-testid="executive-report">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-display text-2xl">Relatório executivo</h2>
             <div className="flex gap-3">

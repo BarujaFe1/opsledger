@@ -173,7 +173,11 @@ export default function WizardClient() {
         <div className="mt-8 space-y-6">
           <StateBox
             tone="success"
-            title={preview.batch.source_name === "demo" ? "Demo carregada com sucesso" : "Importação concluída"}
+            title={
+              preview.batch.source_name.startsWith("demo")
+                ? "Demo de fechamento carregada"
+                : "Importação concluída"
+            }
             body={`Batch #${preview.batch.id} · ${preview.batch.total_issues} issues · status ${preview.batch.status}`}
           />
           <div className="grid md:grid-cols-3 gap-4">
@@ -184,6 +188,7 @@ export default function WizardClient() {
           <button
             type="button"
             onClick={() => router.push(`/batches/${preview.batch.id}`)}
+            data-testid="goto-dashboard"
             className="rounded-full bg-ink-900 px-6 py-3 text-sm font-semibold text-white"
           >
             Ir para o dashboard

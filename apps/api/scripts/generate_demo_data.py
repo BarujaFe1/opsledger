@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -303,12 +304,31 @@ def generate(seed: int = 42) -> None:
     payments_df = pd.DataFrame(payments)
     stock_df = pd.DataFrame(stock)
 
+    scenario = {
+        "id": "monthly_closing_2026_06",
+        "source_name": "demo:monthly_closing_2026_06",
+        "label": "Fechamento mensal junho/2026",
+        "period_start": "2026-06-01",
+        "period_end": "2026-06-30",
+        "seed": seed,
+        "orders": len(orders_df),
+        "payments": len(payments_df),
+        "stock_movements": len(stock_df),
+        "intentional": {
+            "missing_payment": missing_payment_ids,
+            "amount_mismatch": amount_mismatch_ids,
+            "missing_stock": missing_stock_ids,
+            "duplicates": duplicate_ids,
+        },
+    }
+
     for out_dir in DEMO_DIRS:
         out_dir.mkdir(parents=True, exist_ok=True)
         orders_df.to_csv(out_dir / "orders.csv", index=False)
         payments_df.to_csv(out_dir / "payments.csv", index=False)
         stock_df.to_csv(out_dir / "stock_movements.csv", index=False)
-        print(f"wrote demo CSVs → {out_dir}")
+        (out_dir / "scenario.json").write_text(json.dumps(scenario, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"wrote demo CSVs -> {out_dir}")
 
     print(f"orders: {len(orders_df)}")
     print(f"payments: {len(payments_df)}")
