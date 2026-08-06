@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { runDemo, uploadImport } from "@/lib/api";
+import { getMode, runDemo, uploadImport } from "@/lib/api";
 import { rememberBatchId } from "@/lib/routing";
 import type { ImportPreview } from "@/types";
 
@@ -21,11 +21,18 @@ export default function WizardClient() {
   const [paymentsFile, setPaymentsFile] = useState<File | null>(null);
   const [stockFile, setStockFile] = useState<File | null>(null);
   const [demoNonce, setDemoNonce] = useState(0);
+  const [publicDemo, setPublicDemo] = useState(false);
 
   useEffect(() => {
     if (initial === "demo") setMode("demo");
     if (initial === "upload") setMode("upload");
   }, [initial]);
+
+  useEffect(() => {
+    getMode()
+      .then((m) => setPublicDemo(m.public_demo))
+      .catch(() => setPublicDemo(false));
+  }, []);
 
   useEffect(() => {
     if (mode !== "demo") return;
@@ -108,14 +115,23 @@ export default function WizardClient() {
             <p className="font-display text-2xl">Rodar demo</p>
             <p className="mt-2 text-sm text-ink-600">Carrega dados sintéticos realistas sem dependências externas.</p>
           </button>
-          <button
-            type="button"
-            onClick={() => setMode("upload")}
-            className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
-          >
-            <p className="font-display text-2xl">Importar CSVs</p>
-            <p className="mt-2 text-sm text-ink-600">Valida schema mínimo e executa a engine de reconciliação.</p>
-          </button>
+          {publicDemo ? (
+            <div className="rounded-2xl border border-ink-200 bg-white/80 p-6 shadow-soft opacity-80">
+              <p className="font-display text-2xl">Importar CSVs</p>
+              <p className="mt-2 text-sm text-ink-600">
+                Indisponível na demo pública. Execute o OpsLedger localmente para importar seus arquivos.
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setMode("upload")}
+              className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
+            >
+              <p className="font-display text-2xl">Importar CSVs</p>
+              <p className="mt-2 text-sm text-ink-600">Valida schema mínimo e executa a engine de reconciliação.</p>
+            </button>
+          )}
         </div>
       )}
 
@@ -125,22 +141,30 @@ export default function WizardClient() {
 
       {mode === "upload" && (
         <div className="mt-8 space-y-5 rounded-2xl border border-ink-200 bg-white/80 p-6 shadow-soft">
-          <FileField label="Pedidos (orders.csv)" onChange={setOrdersFile} file={ordersFile} />
-          <FileField label="Pagamentos (payments.csv)" onChange={setPaymentsFile} file={paymentsFile} />
-          <FileField label="Estoque (stock_movements.csv)" onChange={setStockFile} file={stockFile} />
-          <div className="flex flex-wrap gap-3 pt-2">
-            <button
-              type="button"
-              disabled={!canUpload || loading}
-              onClick={handleUpload}
-              className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
-            >
-              {loading ? "Processando…" : "Validar e reconciliar"}
-            </button>
-            <button type="button" onClick={() => setMode("choose")} className="text-sm text-ink-600 underline-offset-2 hover:underline">
-              Voltar
-            </button>
-          </div>
+          {publicDemo ? (
+            <p className="text-sm text-ink-600">
+              Upload desabilitado na demo pública. Execute o OpsLedger localmente para importar arquivos.
+            </p>
+          ) : (
+            <>
+              <FileField label="Pedidos (orders.csv)" onChange={setOrdersFile} file={ordersFile} />
+              <FileField label="Pagamentos (payments.csv)" onChange={setPaymentsFile} file={paymentsFile} />
+              <FileField label="Estoque (stock_movements.csv)" onChange={setStockFile} file={stockFile} />
+              <div className="flex flex-wrap gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={!canUpload || loading}
+                  onClick={handleUpload}
+                  className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? "Processando…" : "Validar e reconciliar"}
+                </button>
+                <button type="button" onClick={() => setMode("choose")} className="text-sm text-ink-600 underline-offset-2 hover:underline">
+                  Voltar
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
