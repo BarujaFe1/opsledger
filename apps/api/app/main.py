@@ -1,4 +1,5 @@
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.core.config import get_settings
+from app.core.security import new_request_id
 from app.db.session import init_db
 
 settings = get_settings()
@@ -29,10 +31,20 @@ app = FastAPI(title=settings.app_name, version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
+    # No auth/cookies in this app; keep credentials off to avoid CSRF surface.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    rid = request.headers.get("X-Request-ID") or new_request_id()
+    request.state.request_id = rid
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -44,12 +56,13 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError):
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(_: Request, exc: Exception):
-    logger.exception("Unhandled error: %s", exc)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": {"message": "Erro interno inesperado.", "code": "internal_error"}},
-    )
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    rid = getattr(request.state, "request_id", None)
+    logger.exception("Unhandled error request_id=%s: %s", rid, exc)
+    content = {"detail": {"message": "Erro interno inesperado.", "code": "internal_error"}}
+    if rid:
+        content["detail"]["request_id"] = rid
+    return JSONResponse(status_code=500, content=content)
 
 
 # Prefixed for Vercel same-origin rewrites (/api/* → FastAPI service).
