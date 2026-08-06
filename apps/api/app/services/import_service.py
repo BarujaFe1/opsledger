@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -242,14 +244,11 @@ def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount) ->
     return reconciled, unreconciled
 
 
-def build_dashboard(db: Session, batch: ImportBatch) -> dict:
-    issues = (
-        db.query(ReconciliationIssue)
-        .filter(ReconciliationIssue.batch_id == batch.id)
-        .all()
-    )
-    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict:
+    """Compute dashboard metrics from already-loaded issues/orders.
 
+    Shared by the DB-backed path and the stateless public demo path.
+    """
     by_sev: dict[str, int] = {}
     by_type: dict[str, int] = {}
     for issue in issues:
@@ -316,6 +315,16 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
     }
 
 
+def build_dashboard(db: Session, batch: ImportBatch) -> dict:
+    issues = (
+        db.query(ReconciliationIssue)
+        .filter(ReconciliationIssue.batch_id == batch.id)
+        .all()
+    )
+    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+    return _dashboard_from_data(batch, issues, orders)
+
+
 def update_issue_status(
     db: Session,
     issue: ReconciliationIssue,
@@ -345,13 +354,9 @@ def update_issue_status(
     return issue
 
 
-def build_report_markdown(db: Session, batch: ImportBatch) -> str:
-    dash = build_dashboard(db, batch)
-    issues = (
-        db.query(ReconciliationIssue)
-        .filter(ReconciliationIssue.batch_id == batch.id)
-        .all()
-    )
+def _report_from_data(batch: ImportBatch, issues: list, orders: list) -> str:
+    """Build the closing-report markdown from already-loaded issues/orders."""
+    dash = _dashboard_from_data(batch, issues, orders)
     issues_sorted = sorted(
         issues,
         key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(money(i.amount_impact or 0))),
@@ -393,6 +398,16 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
     return "\n".join(lines)
 
 
+def build_report_markdown(db: Session, batch: ImportBatch) -> str:
+    issues = (
+        db.query(ReconciliationIssue)
+        .filter(ReconciliationIssue.batch_id == batch.id)
+        .all()
+    )
+    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+    return _report_from_data(batch, issues, orders)
+
+
 def issues_to_csv_rows(issues: list[ReconciliationIssue]) -> list[dict]:
     rows = []
     for i in issues:
@@ -416,3 +431,115 @@ def issues_to_csv_rows(issues: list[ReconciliationIssue]) -> list[dict]:
             }
         )
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Stateless public demo (no SQLite write, deterministic, reconstructible)
+# ---------------------------------------------------------------------------
+
+DEMO_BATCH_ID = -1
+# Fixed closing instant for the golden demo dataset. Keeps the stateless public
+# output deterministic (timestamps don't drift between serverless cold starts).
+DEMO_CLOSED_AT = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+_DEMO_CACHE: dict[str, dict] = {}
+_DEMO_LOCK = threading.Lock()
+
+
+def _build_demo_payload() -> dict:
+    """Reconcile the committed golden demo dataset fully in memory.
+
+    No row is written to SQLite. The result is cached by dataset version so it
+    survives serverless cold starts/instance routing (the dataset is fixed and
+    deterministic, so every rebuild is identical).
+    """
+    settings = get_settings()
+    demo = settings.demo_dir
+    for name in ("orders.csv", "payments.csv", "stock_movements.csv"):
+        p = demo / name
+        if not p.exists():
+            raise CsvValidationError(
+                f"Arquivo demo não encontrado: {p.name}.",
+                code="demo_missing",
+            )
+    orders_df = validate_orders(demo / "orders.csv")
+    payments_df = validate_payments(demo / "payments.csv")
+    stock_df = validate_stock(demo / "stock_movements.csv")
+    drafts = run_reconciliation(orders_df, payments_df, stock_df)
+    total_amount, reconciled, unreconciled = compute_amounts(orders_df, payments_df, drafts)
+
+    issues = [
+        ReconciliationIssue(
+            id=idx + 1,
+            batch_id=DEMO_BATCH_ID,
+            issue_type=d.issue_type,
+            severity=d.severity,
+            entity_type=d.entity_type,
+            entity_id=d.entity_id,
+            title=d.title,
+            description=d.description,
+            recommended_action=d.recommended_action,
+            amount_impact=d.amount_impact,
+            status="open",
+            created_at=DEMO_CLOSED_AT,
+            updated_at=DEMO_CLOSED_AT,
+        )
+        for idx, d in enumerate(drafts)
+    ]
+    orders = [
+        Order(order_id=str(r["order_id"]), channel=str(r["channel"]))
+        for _, r in orders_df.iterrows()
+    ]
+    batch = ImportBatch(
+        id=DEMO_BATCH_ID,
+        source_name="demo:monthly_closing_2026_06",
+        status="completed",
+        created_at=DEMO_CLOSED_AT,
+        total_orders=int(len(orders_df)),
+        total_payments=int(len(payments_df)),
+        total_stock_movements=int(len(stock_df)),
+        total_issues=len(drafts),
+        total_amount=total_amount,
+        reconciled_amount=reconciled,
+        unreconciled_amount=unreconciled,
+    )
+    dashboard = _dashboard_from_data(batch, issues, orders)
+    report_md = _report_from_data(batch, issues, orders)
+    return {
+        "batch": batch,
+        "issues": issues,
+        "orders": orders,
+        "dashboard": dashboard,
+        "report_md": report_md,
+        "orders_df": orders_df,
+        "payments_df": payments_df,
+        "stock_df": stock_df,
+    }
+
+
+def run_demo_stateless() -> dict:
+    """Build (and cache by dataset version) the read-only public demo payload.
+
+    Returns a defensive deep copy so callers can never mutate the cached
+    payload by reference. The public demo is shared read-only state: every
+    visitor (and every serverless instance / cold start) must observe the
+    exact same deterministic dataset, so the cache is the single source of
+    truth and is never handed out by reference.
+    """
+    key = get_settings().demo_dataset_version
+    with _DEMO_LOCK:
+        payload = _DEMO_CACHE.get(key)
+        if payload is None:
+            payload = _build_demo_payload()
+            _DEMO_CACHE[key] = payload
+    return copy.deepcopy(payload)
+
+
+def is_demo_batch_id(batch_id: int) -> bool:
+    return batch_id == DEMO_BATCH_ID
+
+
+def get_demo_issue(issue_id: int):
+    for issue in run_demo_stateless()["issues"]:
+        if issue.id == issue_id:
+            return issue
+    return None
