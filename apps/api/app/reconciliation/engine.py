@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Iterable
 
 import pandas as pd
 
-AMOUNT_TOLERANCE = 0.05
-AMOUNT_HIGH_THRESHOLD = 20.0
+from app.core.money import (
+    AMOUNT_HIGH_THRESHOLD,
+    AMOUNT_TOLERANCE,
+    ZERO,
+    money,
+    money_sum,
+)
 
 CHANNEL_ALIASES = {
     "whatsapp": "WhatsApp",
@@ -26,6 +32,7 @@ CHANNEL_ALIASES = {
 
 APPROVED_PAYMENT_STATUSES = {"paid"}
 FULFILLED_ORDER_STATUSES = {"paid", "shipped"}
+MONEY_ISSUE_TYPES = {"missing_payment", "orphan_payment", "amount_mismatch"}
 
 
 @dataclass
@@ -37,7 +44,7 @@ class IssueDraft:
     title: str
     description: str
     recommended_action: str
-    amount_impact: float = 0.0
+    amount_impact: Decimal = ZERO
     channel: str | None = None
 
 
@@ -62,7 +69,7 @@ def rule_missing_payment(orders: pd.DataFrame, payments: pd.DataFrame) -> list[I
     for _, row in paid_orders.iterrows():
         oid = str(row["order_id"])
         if oid not in paid_order_ids:
-            impact = float(row["net_amount"])
+            impact = money(row["net_amount"])
             issues.append(
                 IssueDraft(
                     issue_type="missing_payment",
@@ -91,7 +98,7 @@ def rule_orphan_payment(orders: pd.DataFrame, payments: pd.DataFrame) -> list[Is
     for _, row in approved.iterrows():
         oid = str(row["order_id"])
         if oid not in order_ids:
-            impact = float(row["amount"])
+            impact = money(row["amount"])
             issues.append(
                 IssueDraft(
                     issue_type="orphan_payment",
@@ -118,14 +125,16 @@ def rule_amount_mismatch(orders: pd.DataFrame, payments: pd.DataFrame) -> list[I
     if approved.empty:
         return issues
     pay_sum = approved.groupby("order_id", as_index=False)["amount"].sum().rename(columns={"amount": "paid_sum"})
-    # Use first order row per order_id for net amount comparison
-    order_net = (
-        orders.groupby("order_id", as_index=False)
-        .agg(net_amount=("net_amount", "sum"), channel=("channel", "first"), status=("status", "first"))
+    order_net = orders.groupby("order_id", as_index=False).agg(
+        net_amount=("net_amount", "sum"),
+        channel=("channel", "first"),
+        status=("status", "first"),
     )
     merged = order_net.merge(pay_sum, on="order_id", how="inner")
     for _, row in merged.iterrows():
-        diff = abs(float(row["net_amount"]) - float(row["paid_sum"]))
+        net = money(row["net_amount"])
+        paid = money(row["paid_sum"])
+        diff = money(abs(net - paid))
         if diff > AMOUNT_TOLERANCE:
             severity = "high" if diff >= AMOUNT_HIGH_THRESHOLD else "medium"
             oid = str(row["order_id"])
@@ -137,8 +146,8 @@ def rule_amount_mismatch(orders: pd.DataFrame, payments: pd.DataFrame) -> list[I
                     entity_id=oid,
                     title=f"Divergência de valor no pedido {oid}",
                     description=(
-                        f"Valor líquido do pedido R$ {float(row['net_amount']):.2f} vs "
-                        f"pagamentos aprovados R$ {float(row['paid_sum']):.2f} "
+                        f"Valor líquido do pedido R$ {net:.2f} vs "
+                        f"pagamentos aprovados R$ {paid:.2f} "
                         f"(diferença R$ {diff:.2f})."
                     ),
                     recommended_action="Revisar desconto, frete, taxa ou reembolso.",
@@ -158,18 +167,18 @@ def rule_duplicate_order(orders: pd.DataFrame) -> list[IssueDraft]:
         if len(group) <= 1:
             continue
         skus = set(group["sku"].astype(str))
-        nets = set(round(float(x), 2) for x in group["net_amount"])
+        nets = {money(x) for x in group["net_amount"]}
         inconsistent = len(skus) > 1 or len(nets) > 1
         if not inconsistent and len(group) > 1:
-            # Exact duplicates still flagged as medium
             severity = "medium"
             desc = f"order_id '{oid}' aparece {len(group)} vezes com os mesmos valores."
         else:
             severity = "high"
             desc = (
                 f"order_id '{oid}' aparece {len(group)} vezes com SKUs/valores inconsistentes "
-                f"(SKUs={sorted(skus)}, nets={sorted(nets)})."
+                f"(SKUs={sorted(skus)}, nets={sorted(str(n) for n in nets)})."
             )
+        impact = money_sum([money(x) for x in group["net_amount"].tolist()])
         issues.append(
             IssueDraft(
                 issue_type="duplicate_order",
@@ -179,7 +188,7 @@ def rule_duplicate_order(orders: pd.DataFrame) -> list[IssueDraft]:
                 title=f"Pedido duplicado {oid}",
                 description=desc,
                 recommended_action="Verificar duplicidade de exportação.",
-                amount_impact=float(group["net_amount"].sum()),
+                amount_impact=impact,
                 channel=str(group.iloc[0].get("channel", "")),
             )
         )
@@ -214,7 +223,7 @@ def rule_missing_stock_out(orders: pd.DataFrame, stock: pd.DataFrame) -> list[Is
                         "vinculado ao order_id."
                     ),
                     recommended_action="Revisar baixa de estoque.",
-                    amount_impact=float(row["net_amount"]),
+                    amount_impact=money(row["net_amount"]),
                     channel=str(row.get("channel", "")),
                 )
             )
@@ -238,7 +247,6 @@ def rule_negative_stock(stock: pd.DataFrame) -> list[IssueDraft]:
         elif mtype == "out":
             balances[sku] -= abs(qty)
         elif mtype == "adjustment":
-            # signed quantity: positive increases, negative decreases
             balances[sku] += qty
         if balances[sku] < 0 and sku not in negative_skus:
             negative_skus.add(sku)
@@ -254,7 +262,7 @@ def rule_negative_stock(stock: pd.DataFrame) -> list[IssueDraft]:
                         "após processar movimentações em ordem cronológica."
                     ),
                     recommended_action="Revisar cadastro, contagem física ou baixa duplicada.",
-                    amount_impact=0.0,
+                    amount_impact=ZERO,
                 )
             )
     return issues
@@ -269,13 +277,11 @@ def rule_channel_standardization(orders: pd.DataFrame) -> list[IssueDraft]:
     for ch in raw_channels:
         buckets[_norm_channel(ch)].add(ch)
     for canonical, variants in buckets.items():
-        # Flag when aliases/variants collapse to same canonical and more than one spelling exists
         lowered = {v.lower().strip() for v in variants}
         alias_hits = any(v.lower().strip() in CHANNEL_ALIASES for v in variants)
         if len(variants) > 1 or (alias_hits and any(v.lower().strip() != canonical.lower() for v in variants)):
             if len(variants) == 1 and not alias_hits:
                 continue
-            # Only raise if there are non-canonical spellings or multiple variants
             non_canonical = [v for v in variants if v != canonical]
             if not non_canonical and len(variants) == 1:
                 continue
@@ -290,7 +296,7 @@ def rule_channel_standardization(orders: pd.DataFrame) -> list[IssueDraft]:
                         title=f"Canal não padronizado: {canonical}",
                         description=f"Variações detectadas para o canal '{canonical}': {sample}.",
                         recommended_action="Padronizar dimensão de canal.",
-                        amount_impact=0.0,
+                        amount_impact=ZERO,
                         channel=canonical,
                     )
                 )
@@ -318,19 +324,29 @@ def compute_amounts(
     orders: pd.DataFrame,
     payments: pd.DataFrame,
     issues: Iterable[IssueDraft],
-) -> tuple[float, float, float]:
-    total_amount = float(orders["net_amount"].sum()) if not orders.empty else 0.0
-    issue_list = list(issues)
-    # Unreconciled = sum of financial impacts from open money-related issues (dedup by entity for missing/mismatch)
-    money_types = {"missing_payment", "orphan_payment", "amount_mismatch"}
-    unreconciled = 0.0
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Return (total, reconciled, unreconciled) as quantized Decimals.
+
+    `payments` is accepted for signature stability; amounts come from orders + money issues.
+    """
+    del payments  # unused — kept for call-site compatibility
+    if orders.empty:
+        total_amount = ZERO
+    else:
+        total_amount = money_sum([money(v) for v in orders["net_amount"].tolist()])
+
+    unreconciled = ZERO
     seen: set[tuple[str, str]] = set()
-    for issue in issue_list:
-        if issue.issue_type in money_types:
-            key = (issue.issue_type, issue.entity_id)
-            if key not in seen:
-                seen.add(key)
-                unreconciled += float(issue.amount_impact)
-    unreconciled = min(unreconciled, total_amount) if total_amount else unreconciled
-    reconciled = max(total_amount - unreconciled, 0.0)
+    for issue in issues:
+        if issue.issue_type not in MONEY_ISSUE_TYPES:
+            continue
+        key = (issue.issue_type, issue.entity_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        unreconciled += money(issue.amount_impact)
+    unreconciled = money(unreconciled)
+    if total_amount > ZERO:
+        unreconciled = min(unreconciled, total_amount)
+    reconciled = money(max(total_amount - unreconciled, ZERO))
     return total_amount, reconciled, unreconciled

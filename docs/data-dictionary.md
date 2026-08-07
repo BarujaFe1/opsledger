@@ -13,9 +13,9 @@
 | total_payments | int | Contagem |
 | total_stock_movements | int | Contagem |
 | total_issues | int | Contagem de issues |
-| total_amount | float | Soma net dos pedidos |
-| reconciled_amount | float | Estimativa conciliada |
-| unreconciled_amount | float | Impacto financeiro em aberto |
+| total_amount | Decimal / Numeric(18,2) | Soma net dos pedidos |
+| reconciled_amount | Decimal / Numeric(18,2) | Estimativa conciliada (snapshot do run) |
+| unreconciled_amount | Decimal / Numeric(18,2) | Impacto financeiro no run |
 
 ### `orders`
 Campos alinhados ao CSV de pedidos + `batch_id`, `id` interno.

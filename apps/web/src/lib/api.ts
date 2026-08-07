@@ -85,6 +85,10 @@ export async function getReport(batchId: number): Promise<Report> {
   return request<Report>(`/api/imports/${batchId}/report?format=markdown`);
 }
 
+export async function getMode(): Promise<{ public_demo: boolean }> {
+  return request<{ public_demo: boolean }>("/api/mode");
+}
+
 export function exportIssuesUrl(batchId: number): string {
   return apiUrl(`/api/imports/${batchId}/export/issues.csv`);
 }

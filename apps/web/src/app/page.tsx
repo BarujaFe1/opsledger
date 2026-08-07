@@ -17,6 +17,7 @@ export default function HomePage() {
           <div className="mt-8 flex flex-wrap gap-3 animate-fade-up-delay">
             <Link
               href="/wizard?mode=demo"
+              data-testid="cta-run-demo"
               className="inline-flex items-center justify-center rounded-full bg-accent px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-accent-soft"
             >
               Rodar demo
@@ -34,20 +35,25 @@ export default function HomePage() {
           <div className="absolute -inset-6 rounded-[2rem] bg-gradient-to-br from-accent/15 via-transparent to-accent-warm/15 blur-2xl" />
           <div className="relative overflow-hidden rounded-[1.75rem] border border-ink-200 bg-ink-900 text-ink-50 shadow-soft">
             <div className="border-b border-white/10 px-5 py-3 flex items-center justify-between">
-              <span className="font-mono text-xs tracking-wider text-accent-muted">FECHAMENTO · 30 DIAS</span>
+              <span className="font-mono text-xs tracking-wider text-accent-muted">ILUSTRAÇÃO · FECHAMENTO</span>
               <span className="h-2 w-2 rounded-full bg-accent-soft animate-pulse-soft" />
             </div>
             <div className="p-5 space-y-4">
+              <p className="text-xs text-ink-300 leading-relaxed">
+                Mock visual — os números reais vêm do cenário{" "}
+                <span className="font-mono text-accent-muted">demo:monthly_closing_2026_06</span> após rodar a demo.
+              </p>
               <div className="grid grid-cols-2 gap-3">
-                <Metric label="Conciliado" value="R$ 48.2k" />
-                <Metric label="Em divergência" value="R$ 3.1k" warn />
-                <Metric label="Issues" value="24" />
-                <Metric label="Críticas" value="1" warn />
+                <Metric label="Conciliado" value="R$ …" />
+                <Metric label="Em divergência" value="R$ …" warn />
+                <Metric label="Issues" value="…" />
+                <Metric label="Críticas" value="…" warn />
               </div>
               <div className="rounded-xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs uppercase tracking-[0.16em] text-ink-300">Próxima melhor ação</p>
                 <p className="mt-2 text-sm leading-relaxed text-ink-100">
-                  Estoque negativo em SKU-MEI-09 — revisar contagem física ou baixa duplicada.
+                  Priorize estoque negativo e pagamentos ausentes — o dashboard calcula impacto e severidade no batch
+                  real.
                 </p>
               </div>
             </div>

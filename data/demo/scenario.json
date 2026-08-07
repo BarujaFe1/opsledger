@@ -1,0 +1,37 @@
+{
+  "id": "monthly_closing_2026_06",
+  "source_name": "demo:monthly_closing_2026_06",
+  "label": "Fechamento mensal junho/2026",
+  "period_start": "2026-06-01",
+  "period_end": "2026-06-30",
+  "seed": 42,
+  "orders": 152,
+  "payments": 148,
+  "stock_movements": 257,
+  "intentional": {
+    "missing_payment": [
+      "ORD-0005",
+      "ORD-0017",
+      "ORD-0031",
+      "ORD-0048",
+      "ORD-0063"
+    ],
+    "amount_mismatch": [
+      "ORD-0008",
+      "ORD-0025",
+      "ORD-0042",
+      "ORD-0070"
+    ],
+    "missing_stock": [
+      "ORD-0015",
+      "ORD-0028",
+      "ORD-0052",
+      "ORD-0081",
+      "ORD-0095"
+    ],
+    "duplicates": [
+      "ORD-0012",
+      "ORD-0039"
+    ]
+  }
+}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -8,6 +10,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.money import ZERO, as_json_number, money
 from app.models import (
     ImportBatch,
     IssueStatusHistory,
@@ -16,7 +19,7 @@ from app.models import (
     ReconciliationIssue,
     StockMovement,
 )
-from app.reconciliation.engine import compute_amounts, run_reconciliation
+from app.reconciliation.engine import MONEY_ISSUE_TYPES, compute_amounts, run_reconciliation
 from app.services.csv_validation import (
     CsvValidationError,
     preview_df,
@@ -50,10 +53,10 @@ def _persist_frames(
                 sku=str(row["sku"]),
                 product_name=str(row["product_name"]),
                 quantity=int(row["quantity"]),
-                unit_price=float(row["unit_price"]),
-                gross_amount=float(row["gross_amount"]),
-                discount_amount=float(row["discount_amount"]),
-                net_amount=float(row["net_amount"]),
+                unit_price=money(row["unit_price"]),
+                gross_amount=money(row["gross_amount"]),
+                discount_amount=money(row["discount_amount"]),
+                net_amount=money(row["net_amount"]),
                 status=str(row["status"]),
             )
         )
@@ -64,7 +67,7 @@ def _persist_frames(
                 payment_id=str(row["payment_id"]),
                 order_id=str(row["order_id"]),
                 paid_at=to_naive_utc(row["paid_at"]),
-                amount=float(row["amount"]),
+                amount=money(row["amount"]),
                 method=str(row["method"]),
                 status=str(row["status"]),
                 transaction_reference=(
@@ -83,7 +86,11 @@ def _persist_frames(
                 movement_type=str(row["movement_type"]),
                 quantity=int(row["quantity"]),
                 movement_date=to_naive_utc(row["movement_date"]),
-                reference_order_id=row.get("reference_order_id"),
+                reference_order_id=(
+                    None
+                    if pd.isna(row.get("reference_order_id"))
+                    else str(row.get("reference_order_id"))
+                ),
                 notes=None if pd.isna(row.get("notes")) else str(row.get("notes")),
             )
         )
@@ -172,7 +179,7 @@ def run_demo(db: Session) -> tuple[ImportBatch, dict]:
     stock_df = validate_stock(stock_path)
     return process_import(
         db,
-        source_name="demo",
+        source_name="demo:monthly_closing_2026_06",
         orders_df=orders_df,
         payments_df=payments_df,
         stock_df=stock_df,
@@ -212,24 +219,48 @@ def get_batch_or_404(db: Session, batch_id: int) -> ImportBatch:
     return batch
 
 
-def build_dashboard(db: Session, batch: ImportBatch) -> dict:
-    issues = (
-        db.query(ReconciliationIssue)
-        .filter(ReconciliationIssue.batch_id == batch.id)
-        .all()
-    )
-    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+
+def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount) -> tuple:
+    """Recompute open financial exposure from issues still open/reviewing."""
+    unreconciled = ZERO
+    seen: set[tuple[str, str]] = set()
+    for issue in issues:
+        if issue.status not in {"open", "reviewing"}:
+            continue
+        if issue.issue_type not in MONEY_ISSUE_TYPES:
+            continue
+        key = (issue.issue_type, issue.entity_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        unreconciled += money(issue.amount_impact)
+    unreconciled = money(unreconciled)
+    total = money(total_amount)
+    if total > ZERO:
+        unreconciled = min(unreconciled, total)
+    reconciled = money(max(total - unreconciled, ZERO))
+    return reconciled, unreconciled
+
+
+def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict:
+    """Compute dashboard metrics from already-loaded issues/orders.
+
+    Shared by the DB-backed path and the stateless public demo path.
+    """
     by_sev: dict[str, int] = {}
     by_type: dict[str, int] = {}
     for issue in issues:
         by_sev[issue.severity] = by_sev.get(issue.severity, 0) + 1
         by_type[issue.issue_type] = by_type.get(issue.issue_type, 0) + 1
 
-    # channel impact from order-linked issues
+    # channel impact from order-linked issues (open + reviewing only for actionable impact)
     order_channel = {o.order_id: o.channel for o in orders}
     channel_stats: dict[str, dict[str, float]] = {}
     for issue in issues:
+        if issue.status not in {"open", "reviewing"}:
+            continue
         channel = None
         if issue.entity_type == "order":
             channel = order_channel.get(issue.entity_id)
@@ -237,13 +268,13 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
             channel = issue.entity_id
         if not channel:
             continue
-        bucket = channel_stats.setdefault(channel, {"impact": 0.0, "issues": 0})
-        bucket["impact"] += float(issue.amount_impact or 0)
+        bucket = channel_stats.setdefault(channel, {"impact": ZERO, "issues": 0})
+        bucket["impact"] += money(issue.amount_impact or 0)
         bucket["issues"] += 1
 
     top_channels = sorted(
         [
-            {"channel": k, "impact": v["impact"], "issues": int(v["issues"])}
+            {"channel": k, "impact": as_json_number(v["impact"]), "issues": int(v["issues"])}
             for k, v in channel_stats.items()
         ],
         key=lambda x: x["impact"],
@@ -251,26 +282,47 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
     )[:5]
 
     next_action = None
-    priority = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     open_issues = [i for i in issues if i.status in {"open", "reviewing"}]
     if open_issues:
-        top = sorted(open_issues, key=lambda i: (priority.get(i.severity, 9), -i.amount_impact))[0]
+        top = sorted(
+            open_issues,
+            key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -i.amount_impact),
+        )[0]
         next_action = f"{top.title} — {top.recommended_action}"
     elif not issues:
         next_action = "Nenhum problema encontrado. Fechamento operacional pronto para revisão final."
+    else:
+        next_action = "Todas as issues foram resolvidas ou ignoradas. Fechamento pronto para revisão final."
+
+    total_amount = money(batch.total_amount or 0)
+    reconciled, unreconciled = _open_money_unreconciled(issues, total_amount)
 
     return {
         "batch_id": batch.id,
         "total_orders": batch.total_orders,
-        "total_order_amount": batch.total_amount,
-        "reconciled_amount": batch.reconciled_amount,
-        "unreconciled_amount": batch.unreconciled_amount,
+        "total_order_amount": as_json_number(total_amount),
+        "reconciled_amount": as_json_number(reconciled),
+        "unreconciled_amount": as_json_number(unreconciled),
         "total_issues": batch.total_issues,
-        "issues_by_severity": [{"severity": k, "count": v} for k, v in sorted(by_sev.items())],
+        "open_issues_count": len(open_issues),
+        "issues_by_severity": [
+            {"severity": k, "count": v}
+            for k, v in sorted(by_sev.items(), key=lambda kv: SEVERITY_RANK.get(kv[0], 9))
+        ],
         "issues_by_type": [{"issue_type": k, "count": v} for k, v in sorted(by_type.items())],
         "top_channels_with_divergence": top_channels,
         "next_best_action": next_action,
     }
+
+
+def build_dashboard(db: Session, batch: ImportBatch) -> dict:
+    issues = (
+        db.query(ReconciliationIssue)
+        .filter(ReconciliationIssue.batch_id == batch.id)
+        .all()
+    )
+    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+    return _dashboard_from_data(batch, issues, orders)
 
 
 def update_issue_status(
@@ -302,13 +354,12 @@ def update_issue_status(
     return issue
 
 
-def build_report_markdown(db: Session, batch: ImportBatch) -> str:
-    dash = build_dashboard(db, batch)
-    issues = (
-        db.query(ReconciliationIssue)
-        .filter(ReconciliationIssue.batch_id == batch.id)
-        .order_by(ReconciliationIssue.severity.desc(), ReconciliationIssue.amount_impact.desc())
-        .all()
+def _report_from_data(batch: ImportBatch, issues: list, orders: list) -> str:
+    """Build the closing-report markdown from already-loaded issues/orders."""
+    dash = _dashboard_from_data(batch, issues, orders)
+    issues_sorted = sorted(
+        issues,
+        key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(money(i.amount_impact or 0))),
     )
     lines = [
         f"# Relatório de Fechamento Operacional — Batch #{batch.id}",
@@ -321,9 +372,10 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
         "",
         f"- Pedidos: **{dash['total_orders']}**",
         f"- Valor total: **R$ {dash['total_order_amount']:.2f}**",
-        f"- Valor conciliado: **R$ {dash['reconciled_amount']:.2f}**",
-        f"- Valor em divergência: **R$ {dash['unreconciled_amount']:.2f}**",
-        f"- Issues: **{dash['total_issues']}**",
+        f"- Valor conciliado (issues abertas): **R$ {dash['reconciled_amount']:.2f}**",
+        f"- Valor em divergência (issues abertas): **R$ {dash['unreconciled_amount']:.2f}**",
+        f"- Issues totais: **{dash['total_issues']}**",
+        f"- Issues abertas/em revisão: **{dash['open_issues_count']}**",
         "",
         "## Issues por severidade",
         "",
@@ -334,15 +386,26 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
     else:
         lines.append("- Nenhum problema encontrado.")
     lines.extend(["", "## Próxima melhor ação", "", dash.get("next_best_action") or "—", "", "## Top issues", ""])
-    for issue in issues[:15]:
+    for issue in issues_sorted[:15]:
+        impact = money(issue.amount_impact or 0)
         lines.append(
-            f"- **[{issue.severity}] {issue.title}** — impacto R$ {issue.amount_impact:.2f} — status `{issue.status}`"
+            f"- **[{issue.severity}] {issue.title}** — impacto R$ {impact:.2f} — status `{issue.status}`"
         )
         lines.append(f"  - {issue.recommended_action}")
     if not issues:
         lines.append("- Sem issues abertas.")
     lines.extend(["", "---", "_Gerado por OpsLedger MVP_"])
     return "\n".join(lines)
+
+
+def build_report_markdown(db: Session, batch: ImportBatch) -> str:
+    issues = (
+        db.query(ReconciliationIssue)
+        .filter(ReconciliationIssue.batch_id == batch.id)
+        .all()
+    )
+    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
+    return _report_from_data(batch, issues, orders)
 
 
 def issues_to_csv_rows(issues: list[ReconciliationIssue]) -> list[dict]:
@@ -368,3 +431,115 @@ def issues_to_csv_rows(issues: list[ReconciliationIssue]) -> list[dict]:
             }
         )
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Stateless public demo (no SQLite write, deterministic, reconstructible)
+# ---------------------------------------------------------------------------
+
+DEMO_BATCH_ID = -1
+# Fixed closing instant for the golden demo dataset. Keeps the stateless public
+# output deterministic (timestamps don't drift between serverless cold starts).
+DEMO_CLOSED_AT = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+_DEMO_CACHE: dict[str, dict] = {}
+_DEMO_LOCK = threading.Lock()
+
+
+def _build_demo_payload() -> dict:
+    """Reconcile the committed golden demo dataset fully in memory.
+
+    No row is written to SQLite. The result is cached by dataset version so it
+    survives serverless cold starts/instance routing (the dataset is fixed and
+    deterministic, so every rebuild is identical).
+    """
+    settings = get_settings()
+    demo = settings.demo_dir
+    for name in ("orders.csv", "payments.csv", "stock_movements.csv"):
+        p = demo / name
+        if not p.exists():
+            raise CsvValidationError(
+                f"Arquivo demo não encontrado: {p.name}.",
+                code="demo_missing",
+            )
+    orders_df = validate_orders(demo / "orders.csv")
+    payments_df = validate_payments(demo / "payments.csv")
+    stock_df = validate_stock(demo / "stock_movements.csv")
+    drafts = run_reconciliation(orders_df, payments_df, stock_df)
+    total_amount, reconciled, unreconciled = compute_amounts(orders_df, payments_df, drafts)
+
+    issues = [
+        ReconciliationIssue(
+            id=idx + 1,
+            batch_id=DEMO_BATCH_ID,
+            issue_type=d.issue_type,
+            severity=d.severity,
+            entity_type=d.entity_type,
+            entity_id=d.entity_id,
+            title=d.title,
+            description=d.description,
+            recommended_action=d.recommended_action,
+            amount_impact=d.amount_impact,
+            status="open",
+            created_at=DEMO_CLOSED_AT,
+            updated_at=DEMO_CLOSED_AT,
+        )
+        for idx, d in enumerate(drafts)
+    ]
+    orders = [
+        Order(order_id=str(r["order_id"]), channel=str(r["channel"]))
+        for _, r in orders_df.iterrows()
+    ]
+    batch = ImportBatch(
+        id=DEMO_BATCH_ID,
+        source_name="demo:monthly_closing_2026_06",
+        status="completed",
+        created_at=DEMO_CLOSED_AT,
+        total_orders=int(len(orders_df)),
+        total_payments=int(len(payments_df)),
+        total_stock_movements=int(len(stock_df)),
+        total_issues=len(drafts),
+        total_amount=total_amount,
+        reconciled_amount=reconciled,
+        unreconciled_amount=unreconciled,
+    )
+    dashboard = _dashboard_from_data(batch, issues, orders)
+    report_md = _report_from_data(batch, issues, orders)
+    return {
+        "batch": batch,
+        "issues": issues,
+        "orders": orders,
+        "dashboard": dashboard,
+        "report_md": report_md,
+        "orders_df": orders_df,
+        "payments_df": payments_df,
+        "stock_df": stock_df,
+    }
+
+
+def run_demo_stateless() -> dict:
+    """Build (and cache by dataset version) the read-only public demo payload.
+
+    Returns a defensive deep copy so callers can never mutate the cached
+    payload by reference. The public demo is shared read-only state: every
+    visitor (and every serverless instance / cold start) must observe the
+    exact same deterministic dataset, so the cache is the single source of
+    truth and is never handed out by reference.
+    """
+    key = get_settings().demo_dataset_version
+    with _DEMO_LOCK:
+        payload = _DEMO_CACHE.get(key)
+        if payload is None:
+            payload = _build_demo_payload()
+            _DEMO_CACHE[key] = payload
+    return copy.deepcopy(payload)
+
+
+def is_demo_batch_id(batch_id: int) -> bool:
+    return batch_id == DEMO_BATCH_ID
+
+
+def get_demo_issue(issue_id: int):
+    for issue in run_demo_stateless()["issues"]:
+        if issue.id == issue_id:
+            return issue
+    return None

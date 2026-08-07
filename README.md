@@ -38,7 +38,7 @@
   <img src="./assets/hero-cover.png" alt="OpsLedger product overview" width="100%" />
 </p>
 
-> **Lab / demo notice:** OpsLedger is a **portfolio lab**, not a production ERP/WMS. The public demo uses synthetic data and a reconciliation engine with honest single-user limits (no auth, no multi-tenant, SQLite).
+> **Lab / demo notice:** OpsLedger is a **portfolio lab**, not a production ERP/WMS. The public demo is **stateless and read-only**: it reconstructs a fixed synthetic dataset in memory, exposes no upload or mutation endpoints, and masks structured PII in previews. The local workspace is single-user SQLite with honest limits (no auth, no multi-tenant).
 
 ---
 
@@ -54,18 +54,20 @@ Pequenos e-commerces fecham a semana com planilhas que quase batem: pagamentos �
 Analistas operacionais, founders de e-commerce pequeno/médio e profissionais de dados que precisam mostrar reconciliação aplicada (não só um dashboard).
 
 ### Funcionalidades
-- Demo sintética one-click ou import de CSVs (pedidos / pagamentos / estoque)
+- Demo sintética one-click (**modo público:** stateless, read-only, dados sintéticos) ou import de CSVs local (pedidos / pagamentos / estoque)
 - Engine de reconciliação com regras testáveis (qualidade, financeiro, estoque)
 - Dashboard executivo (conciliado vs. em divergência, próxima ação)
 - Issues register com detalhe, timeline de status e priorização por impacto
-- Export CSV e relatório de fechamento
-- Testes da engine (`pytest`) e UI (`vitest`)
+- Export CSV (com defesa contra injeção de fórmula) e relatório de fechamento
+- Testes da engine (`pytest`) e da UI (`vitest`)
 
 ### Escopo e limites (honestos)
 - **Não é produção:** sem autenticação, sem multiempresa
-- SQLite single-user; estoque é saldo do batch, não WMS
+- SQLite single-user; no deploy Vercel o DB é `/tmp` (demo efêmera) — o modo público não persiste estado
+- Estoque é saldo do batch, não WMS
 - Sem integrações reais de marketplace/gateway
-- Demo pública depende do deploy Vercel configurado neste repositório
+- Dinheiro em `Decimal`/`Numeric(18,2)` no domínio (sem perda de precisão em splits / pagamentos parciais)
+- Demo pública depende do deploy Vercel configurado neste repositório e é somente-leitura por design
 
 ---
 
@@ -81,18 +83,20 @@ Small e-commerce teams close the week on spreadsheets that almost reconcile: orp
 Ops analysts, small/mid e-commerce founders, and data professionals who need applied reconciliation — not another vanity dashboard.
 
 ### Features
-- One-click synthetic demo or CSV import (orders / payments / stock)
+- One-click synthetic demo (**public mode:** stateless, read-only, synthetic data) or local CSV import (orders / payments / stock)
 - Reconciliation engine with testable rules (quality, finance, stock)
 - Executive dashboard (reconciled vs. open issues, next best action)
 - Issues register with detail, status timeline and impact prioritization
-- CSV export and closing report
+- CSV export (with formula-injection defense) and closing report
 - Engine tests (`pytest`) and UI tests (`vitest`)
 
 ### Scope and honest limits
 - **Not production:** no auth, no multi-tenant
-- SQLite single-user; stock is batch balance, not a WMS
+- SQLite single-user; on Vercel the DB is `/tmp` (ephemeral demo) — public mode is stateless
+- Stock is batch balance, not a WMS
 - No real marketplace/payment-gateway integrations
-- Public demo depends on the Vercel deploy in this repository
+- Money is `Decimal`/`Numeric(18,2)` in the domain (no precision loss on splits / partial payments)
+- Public demo depends on the Vercel deploy in this repository and is read-only by design
 
 ---
 
@@ -103,7 +107,7 @@ Ops analysts, small/mid e-commerce founders, and data professionals who need app
 | **Public lab** | [https://opsledger-app.vercel.app](https://opsledger-app.vercel.app) |
 | **GitHub** | [https://github.com/BarujaFe1/opsledger](https://github.com/BarujaFe1/opsledger) |
 
-**How to try:** open the demo → **Rodar demo** → inspect KPIs → open a high-severity issue → change status → export / closing report.
+**How to try:** open the demo → **Rodar demo** → inspect KPIs → open a high-severity issue → (local mode only) change status → export / closing report. In the public demo, upload and status changes are disabled by design.
 
 ---
 
@@ -134,6 +138,22 @@ Ops analysts, small/mid e-commerce founders, and data professionals who need app
 | API | FastAPI, Pydantic, Pandas, SQLAlchemy, SQLite, pytest |
 | Ops | Docker Compose, Vercel (`vercel.json` frontend + FastAPI services) |
 
+### Frontend
+- **Framework:** Next.js 15 (App Router) & React 19
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS
+- **Charts:** Recharts
+- **Table:** TanStack Table
+- **UI tests:** Vitest + Playwright (critical path)
+
+### Backend
+- **API framework:** FastAPI & Uvicorn (Python 3.12)
+- **Modeling:** Pydantic v2 + SQLAlchemy
+- **Processing:** Pandas
+- **DB (MVP):** SQLite (PostgreSQL migration documented)
+- **Money:** `Decimal` + `Numeric(18, 2)`
+- **Tests:** Pytest + Vitest + Playwright
+
 ---
 
 ## Architecture
@@ -150,11 +170,41 @@ assets/         icon, hero, screenshots
 
 High-level flow: CSV/demo → schema validation → ImportBatch → rule engine → issues + KPIs → status updates → CSV export / closing report.
 
+## Visual architecture
+
+<p align="center">
+  <img src="./assets/architecture-pipeline.png" alt="OpsLedger visual architecture" width="100%" />
+</p>
+
+OpsLedger follows a traceable operational flow: raw CSV or demo dataset enters the pipeline, gets validated, batched, reconciled by explicit rules and exported as dashboard insights, issue register or closing report.
+
+## Data flow pipeline
+
+```txt
+Raw Input (demo / upload)
+  ↓
+CSV Parsing + Schema Validation
+  ↓
+ImportBatch persistence (SQLite, local mode)
+  ↓
+Reconciliation Engine (7 rules)
+  ↓
+Issue materialization + amount impact
+  ↓
+Dashboard aggregations
+  ↓
+Issue status workflow
+  ↓
+CSV export / Markdown-HTML report
+```
+
 ---
 
 ## Quick Start
 
 **Prerequisites:** Node.js 20+, Python 3.12+, Git.
+
+> One-click public demo: **[https://opsledger-app.vercel.app](https://opsledger-app.vercel.app)** → **Rodar demo**.
 
 ### Windows one-shot
 ```bash
@@ -195,6 +245,33 @@ docker compose up --build
 - **SQLite + SQLAlchemy** for a zero-friction local demo without cloud dependencies
 - **Executive UX first** (KPIs, next action, issue severity) instead of raw tables only
 - **Pandas in the API** for batch validation and joins that match real ops exports
+- **Stateless public demo:** the read-only showcase reconstructs a fixed synthetic dataset in memory (no SQLite write, no uploads/mutations) so it is safe on serverless / multi-instance Vercel
+
+### Testing
+
+```bash
+# Backend (pytest)
+cd apps/api
+.venv\Scripts\python -m pytest -q
+```
+
+Cobertura mínima: 7 regras da engine + `/api/health` + `/api/demo/run`.
+
+```bash
+# Frontend (Vitest + Playwright + typecheck + lint + build)
+cd apps/web
+npm test
+npm run typecheck
+npm run lint
+npm run build
+# E2E (requer apps/api/.venv e Chrome/Chromium):
+set PLAYWRIGHT_CHANNEL=chrome
+npm run test:e2e
+```
+
+CI: `.github/workflows/ci.yml` (pytest + vitest + lint + typecheck + build + E2E).
+
+Cenário demo: `demo:monthly_closing_2026_06` — ver [`docs/scenarios/monthly_closing.md`](docs/scenarios/monthly_closing.md).
 
 ---
 
@@ -222,3 +299,55 @@ docker compose up --build
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).
+
+---
+
+## Documentation
+
+- [`HANDOFF_PORTFOLIO.md`](HANDOFF_PORTFOLIO.md) — portfolio-ready texts (LinkedIn, interview)
+- [`docs/PORTFOLIO_HANDOFF.md`](docs/PORTFOLIO_HANDOFF.md) — before/after deste pass + evidências
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release note da elevação
+- [`docs/scenarios/monthly_closing.md`](docs/scenarios/monthly_closing.md) — cenário reproduzível
+- [`docs/screenshots/ROTEIRO.md`](docs/screenshots/ROTEIRO.md) — captura + demo 3–5 min
+- [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) — quality-pass audit
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — what changed in this pass
+- [`docs/architecture.md`](docs/architecture.md) — architecture
+- [`docs/TECHNICAL_DECISIONS.md`](docs/TECHNICAL_DECISIONS.md) — ADRs and trade-offs
+- [`docs/TESTING.md`](docs/TESTING.md) — test pyramid
+- [`docs/reconciliation-rules.md`](docs/reconciliation-rules.md) — detailed rules
+- [`docs/data-dictionary.md`](docs/data-dictionary.md) — tables and CSV schemas
+- [`docs/demo-story.md`](docs/demo-story.md) — demo narrative
+- [`docs/deployment.md`](docs/deployment.md) — Vercel / Docker / local
+
+---
+
+## Portfolio value
+
+OpsLedger demonstrates critical skills for **Analytics Engineering, Data/Ops Analytics and Full-Stack**:
+
+- **Applied data product:** a real operational closing pain (spreadsheets that don't tie out)
+- **Testable engine:** explicit rules with `pytest` — not just a dashboard
+- **Modeling + SQLAlchemy:** batches, entities and status history
+- **Executive UX:** investigation, prioritization and manager handoff
+- **Security & demo hygiene:** stateless read-only public showcase, safe errors, PII allowlist, CSV/formula-injection defense, E2E coverage
+- **Interview-grade docs:** README + HANDOFF + technical decisions
+
+---
+
+## Interview pitch
+
+1. **30s — pain:** Marina closes the week with 3 CSVs that don't reconcile.
+2. **Live demo:** home → Rodar demo → dashboard (divergence + next action).
+3. **Critical issue:** open the detail, explain the rule and the recommended action.
+4. **Code:** open the engine + a `pytest` test — highlight rule purity and the safe-error / PII / CSV-injection controls.
+5. **Money:** show `app/core/money.py` and a test that `0.1 + 0.2 == 0.3` — `Decimal` in the domain, no float drift on splits / partial payments.
+6. **Trade-offs:** SQLite `/tmp` on Vercel, no auth, read-only public demo — and what v1.1 looks like (Postgres, workspaces).
+7. **Positioning:** Analytics Engineering / Ops Analytics, not "fintech platform".
+
+---
+
+## Repository metadata
+
+**About:** Operational reconciliation for small e-commerce: orders, payments and stock with testable rules, executive dashboard and closing report.
+
+**Topics:** reconciliation, operations, ecommerce, data-quality, fastapi, nextjs, typescript, python, pandas, sqlite, dashboard, portfolio-project, csv-processing, analytics-engineering

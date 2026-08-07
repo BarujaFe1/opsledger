@@ -6,11 +6,13 @@ import { useParams } from "next/navigation";
 import { ChannelImpactChart, IssuesByTypeChart } from "@/components/Charts";
 import { KpiCard, MoneyKpi } from "@/components/KpiCard";
 import { exportIssuesUrl, getDashboard, getReport } from "@/lib/api";
+import { parsePositiveInt, rememberBatchId } from "@/lib/routing";
+import { severityLabel } from "@/lib/utils";
 import type { Dashboard, Report } from "@/types";
 
 export default function BatchDashboardPage() {
   const params = useParams();
-  const batchId = Number(params.batchId);
+  const batchId = parsePositiveInt(params.batchId);
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
@@ -18,7 +20,12 @@ export default function BatchDashboardPage() {
   const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
-    if (!batchId) return;
+    if (batchId == null) {
+      setLoading(false);
+      setError("ID de batch inválido.");
+      return;
+    }
+    rememberBatchId(batchId);
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -38,6 +45,7 @@ export default function BatchDashboardPage() {
   }, [batchId]);
 
   async function loadReport() {
+    if (batchId == null) return;
     try {
       const r = await getReport(batchId);
       setReport(r);
@@ -47,20 +55,45 @@ export default function BatchDashboardPage() {
     }
   }
 
-  if (loading) {
-    return <div className="mx-auto max-w-6xl px-5 py-12 text-ink-500 animate-pulse-soft">Carregando indicadores…</div>;
+  function downloadReport() {
+    if (!report) return;
+    const blob = new Blob([report.content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `opsledger-batch-${report.batch_id}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
-  if (error || !dash) {
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-6xl px-5 py-12" role="status" aria-live="polite">
+        <div className="h-8 w-48 animate-pulse rounded bg-ink-200/70" />
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-24 animate-pulse rounded-2xl bg-ink-100" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !dash || batchId == null) {
     return (
       <div className="mx-auto max-w-6xl px-5 py-12">
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-900">{error || "Batch não encontrado"}</div>
-        <Link href="/wizard" className="mt-4 inline-block text-sm text-accent underline">Voltar ao wizard</Link>
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-900" role="alert">
+          {error || "Batch não encontrado"}
+        </div>
+        <Link href="/wizard?mode=demo" className="mt-4 inline-block text-sm text-accent underline">
+          Rodar demo novamente
+        </Link>
       </div>
     );
   }
 
   const critical = dash.issues_by_severity.find((s) => s.severity === "critical")?.count || 0;
+  const openCount = dash.open_issues_count ?? dash.total_issues;
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-10">
@@ -68,11 +101,14 @@ export default function BatchDashboardPage() {
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Dashboard · Batch #{batchId}</p>
           <h1 className="mt-2 font-display text-4xl text-ink-900">Fechamento operacional</h1>
-          <p className="mt-2 text-ink-600">KPIs reais do batch reconciliado.</p>
+          <p className="mt-2 text-ink-600">
+            KPIs do batch · {openCount} issue{openCount === 1 ? "" : "s"} em aberto
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
             href={`/batches/${batchId}/issues`}
+            data-testid="link-issues"
             className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white"
           >
             Issues Register
@@ -86,6 +122,7 @@ export default function BatchDashboardPage() {
           <button
             type="button"
             onClick={loadReport}
+            data-testid="btn-report"
             className="rounded-full border border-ink-300 bg-white px-4 py-2 text-sm font-semibold text-ink-800"
           >
             Relatório
@@ -103,11 +140,14 @@ export default function BatchDashboardPage() {
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard label="Total de pedidos" value={dash.total_orders} />
         <MoneyKpi label="Valor total de pedidos" amount={dash.total_order_amount} />
-        <MoneyKpi label="Valor conciliado" amount={dash.reconciled_amount} tone="good" />
-        <MoneyKpi label="Valor em divergência" amount={dash.unreconciled_amount} tone="warn" />
+        <MoneyKpi label="Valor conciliado (aberto)" amount={dash.reconciled_amount} tone="good" />
+        <MoneyKpi label="Valor em divergência (aberto)" amount={dash.unreconciled_amount} tone="warn" />
         <KpiCard label="Quantidade de issues" value={dash.total_issues} tone={dash.total_issues ? "warn" : "good"} />
         <KpiCard label="Issues críticas" value={critical} tone={critical ? "danger" : "good"} />
       </div>
+      <p className="mt-3 text-xs text-ink-500">
+        Valores conciliado/divergência refletem issues financeiras ainda abertas ou em revisão (não o snapshot congelado do import).
+      </p>
 
       {dash.next_best_action ? (
         <div className="mt-8 rounded-2xl border border-ink-200 bg-ink-900 p-5 text-ink-50 shadow-soft">
@@ -139,7 +179,7 @@ export default function BatchDashboardPage() {
           ) : (
             dash.issues_by_severity.map((s) => (
               <div key={s.severity} className="rounded-xl border border-ink-200 px-4 py-3">
-                <p className="text-xs uppercase tracking-wider text-ink-500">{s.severity}</p>
+                <p className="text-xs uppercase tracking-wider text-ink-500">{severityLabel(s.severity)}</p>
                 <p className="font-display text-2xl">{s.count}</p>
               </div>
             ))
@@ -148,12 +188,17 @@ export default function BatchDashboardPage() {
       </div>
 
       {showReport && report ? (
-        <div className="mt-8 rounded-2xl border border-ink-200 bg-white p-5">
-          <div className="flex items-center justify-between gap-3">
+        <div className="mt-8 rounded-2xl border border-ink-200 bg-white p-5" data-testid="executive-report">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-display text-2xl">Relatório executivo</h2>
-            <button type="button" className="text-sm text-ink-500" onClick={() => setShowReport(false)}>
-              Fechar
-            </button>
+            <div className="flex gap-3">
+              <button type="button" className="text-sm font-medium text-accent" onClick={downloadReport}>
+                Baixar .md
+              </button>
+              <button type="button" className="text-sm text-ink-500" onClick={() => setShowReport(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
           <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink-700">{report.content}</pre>
         </div>

@@ -54,3 +54,37 @@ export function issueTypeLabel(type: string): string {
   };
   return map[type] || type;
 }
+
+export function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    open: "Aberta",
+    reviewing: "Em revisão",
+    resolved: "Resolvida",
+    ignored: "Ignorada",
+  };
+  return map[status] || status;
+}
+
+export function severityLabel(severity: string): string {
+  const map: Record<string, string> = {
+    critical: "Crítica",
+    high: "Alta",
+    medium: "Média",
+    low: "Baixa",
+  };
+  return map[severity] || severity;
+}
+
+export const STATUS_OPTIONS = [
+  { value: "open", label: "Aberta" },
+  { value: "reviewing", label: "Em revisão" },
+  { value: "resolved", label: "Resolvida" },
+  { value: "ignored", label: "Ignorada" },
+] as const;
+
+export const SEVERITY_OPTIONS = [
+  { value: "critical", label: "Crítica" },
+  { value: "high", label: "Alta" },
+  { value: "medium", label: "Média" },
+  { value: "low", label: "Baixa" },
+] as const;

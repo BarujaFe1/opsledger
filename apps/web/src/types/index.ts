@@ -63,6 +63,7 @@ export type Dashboard = {
   reconciled_amount: number;
   unreconciled_amount: number;
   total_issues: number;
+  open_issues_count?: number;
   issues_by_severity: { severity: string; count: number }[];
   issues_by_type: { issue_type: string; count: number }[];
   top_channels_with_divergence: { channel: string; impact: number; issues: number }[];

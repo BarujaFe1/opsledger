@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { runDemo, uploadImport } from "@/lib/api";
+import { getMode, runDemo, uploadImport } from "@/lib/api";
+import { rememberBatchId } from "@/lib/routing";
 import type { ImportPreview } from "@/types";
 
 type Mode = "choose" | "demo" | "upload" | "preview";
@@ -19,11 +20,19 @@ export default function WizardClient() {
   const [ordersFile, setOrdersFile] = useState<File | null>(null);
   const [paymentsFile, setPaymentsFile] = useState<File | null>(null);
   const [stockFile, setStockFile] = useState<File | null>(null);
+  const [demoNonce, setDemoNonce] = useState(0);
+  const [publicDemo, setPublicDemo] = useState(false);
 
   useEffect(() => {
     if (initial === "demo") setMode("demo");
     if (initial === "upload") setMode("upload");
   }, [initial]);
+
+  useEffect(() => {
+    getMode()
+      .then((m) => setPublicDemo(m.public_demo))
+      .catch(() => setPublicDemo(false));
+  }, []);
 
   useEffect(() => {
     if (mode !== "demo") return;
@@ -36,10 +45,12 @@ export default function WizardClient() {
         if (!cancelled) {
           setPreview(result);
           setMode("preview");
-          sessionStorage.setItem("opsledger_batch_id", String(result.batch.id));
+          rememberBatchId(result.batch.id);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Falha ao rodar demo");
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Falha ao rodar demo");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -47,7 +58,7 @@ export default function WizardClient() {
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, [mode, demoNonce]);
 
   const canUpload = useMemo(
     () => Boolean(ordersFile && paymentsFile && stockFile),
@@ -66,7 +77,7 @@ export default function WizardClient() {
       });
       setPreview(result);
       setMode("preview");
-      sessionStorage.setItem("opsledger_batch_id", String(result.batch.id));
+      rememberBatchId(result.batch.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha no upload");
     } finally {
@@ -74,32 +85,53 @@ export default function WizardClient() {
     }
   }
 
+  function retryDemo() {
+    setError(null);
+    setPreview(null);
+    setMode("demo");
+    setDemoNonce((n) => n + 1);
+  }
+
   return (
     <div className="mx-auto max-w-4xl px-5 py-12">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Wizard</p>
       <h1 className="mt-2 font-display text-4xl text-ink-900">Carregar dados</h1>
       <p className="mt-3 text-ink-600 max-w-2xl">
-        Use a demo sintética (150 pedidos, divergências intencionais) ou importe seus CSVs de pedidos, pagamentos e estoque.
+        Use a demo sintética (≈150 pedidos, divergências intencionais) ou importe seus CSVs de pedidos, pagamentos e
+        estoque.
       </p>
 
       {mode === "choose" && (
         <div className="mt-10 grid sm:grid-cols-2 gap-4">
           <button
             type="button"
-            onClick={() => setMode("demo")}
+            onClick={() => {
+              setError(null);
+              setMode("demo");
+              setDemoNonce((n) => n + 1);
+            }}
             className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
           >
             <p className="font-display text-2xl">Rodar demo</p>
             <p className="mt-2 text-sm text-ink-600">Carrega dados sintéticos realistas sem dependências externas.</p>
           </button>
-          <button
-            type="button"
-            onClick={() => setMode("upload")}
-            className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
-          >
-            <p className="font-display text-2xl">Importar CSVs</p>
-            <p className="mt-2 text-sm text-ink-600">Valida schema mínimo e executa a engine de reconciliação.</p>
-          </button>
+          {publicDemo ? (
+            <div className="rounded-2xl border border-ink-200 bg-white/80 p-6 shadow-soft opacity-80">
+              <p className="font-display text-2xl">Importar CSVs</p>
+              <p className="mt-2 text-sm text-ink-600">
+                Indisponível na demo pública. Execute o OpsLedger localmente para importar seus arquivos.
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setMode("upload")}
+              className="rounded-2xl border border-ink-200 bg-white/80 p-6 text-left shadow-soft hover:border-accent transition"
+            >
+              <p className="font-display text-2xl">Importar CSVs</p>
+              <p className="mt-2 text-sm text-ink-600">Valida schema mínimo e executa a engine de reconciliação.</p>
+            </button>
+          )}
         </div>
       )}
 
@@ -109,32 +141,67 @@ export default function WizardClient() {
 
       {mode === "upload" && (
         <div className="mt-8 space-y-5 rounded-2xl border border-ink-200 bg-white/80 p-6 shadow-soft">
-          <FileField label="Pedidos (orders.csv)" onChange={setOrdersFile} file={ordersFile} />
-          <FileField label="Pagamentos (payments.csv)" onChange={setPaymentsFile} file={paymentsFile} />
-          <FileField label="Estoque (stock_movements.csv)" onChange={setStockFile} file={stockFile} />
-          <div className="flex flex-wrap gap-3 pt-2">
+          {publicDemo ? (
+            <p className="text-sm text-ink-600">
+              Upload desabilitado na demo pública. Execute o OpsLedger localmente para importar arquivos.
+            </p>
+          ) : (
+            <>
+              <FileField label="Pedidos (orders.csv)" onChange={setOrdersFile} file={ordersFile} />
+              <FileField label="Pagamentos (payments.csv)" onChange={setPaymentsFile} file={paymentsFile} />
+              <FileField label="Estoque (stock_movements.csv)" onChange={setStockFile} file={stockFile} />
+              <div className="flex flex-wrap gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={!canUpload || loading}
+                  onClick={handleUpload}
+                  className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? "Processando…" : "Validar e reconciliar"}
+                </button>
+                <button type="button" onClick={() => setMode("choose")} className="text-sm text-ink-600 underline-offset-2 hover:underline">
+                  Voltar
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div>
+          <StateBox tone="error" title="Não foi possível processar" body={error} />
+          <div className="mt-3 flex flex-wrap gap-3">
             <button
               type="button"
-              disabled={!canUpload || loading}
-              onClick={handleUpload}
-              className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              onClick={retryDemo}
+              className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white"
             >
-              {loading ? "Processando…" : "Validar e reconciliar"}
+              Tentar demo de novo
             </button>
-            <button type="button" onClick={() => setMode("choose")} className="text-sm text-ink-600 underline-offset-2 hover:underline">
-              Voltar
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setMode("choose");
+              }}
+              className="text-sm text-ink-600 underline"
+            >
+              Voltar às opções
             </button>
           </div>
         </div>
       )}
 
-      {error && <StateBox tone="error" title="Não foi possível processar" body={error} />}
-
       {mode === "preview" && preview && (
         <div className="mt-8 space-y-6">
           <StateBox
             tone="success"
-            title={preview.batch.source_name === "demo" ? "Demo carregada com sucesso" : "Importação concluída"}
+            title={
+              preview.batch.source_name.startsWith("demo")
+                ? "Demo de fechamento carregada"
+                : "Importação concluída"
+            }
             body={`Batch #${preview.batch.id} · ${preview.batch.total_issues} issues · status ${preview.batch.status}`}
           />
           <div className="grid md:grid-cols-3 gap-4">
@@ -145,6 +212,7 @@ export default function WizardClient() {
           <button
             type="button"
             onClick={() => router.push(`/batches/${preview.batch.id}`)}
+            data-testid="goto-dashboard"
             className="rounded-full bg-ink-900 px-6 py-3 text-sm font-semibold text-white"
           >
             Ir para o dashboard
@@ -209,7 +277,7 @@ function StateBox({
     success: "border-accent/30 bg-accent-muted/60 text-ink-900",
   }[tone];
   return (
-    <div className={`mt-8 rounded-2xl border p-5 ${styles}`}>
+    <div className={`mt-8 rounded-2xl border p-5 ${styles}`} role={tone === "error" ? "alert" : undefined}>
       <p className="font-semibold">{title}</p>
       <p className={`mt-1 text-sm ${tone === "loading" ? "text-ink-600 animate-pulse-soft" : ""}`}>{body}</p>
     </div>

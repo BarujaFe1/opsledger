@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -9,6 +10,9 @@ from app.db.session import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+MoneyCol = Numeric(18, 2)
 
 
 class ImportBatch(Base):
@@ -22,9 +26,9 @@ class ImportBatch(Base):
     total_payments: Mapped[int] = mapped_column(Integer, default=0)
     total_stock_movements: Mapped[int] = mapped_column(Integer, default=0)
     total_issues: Mapped[int] = mapped_column(Integer, default=0)
-    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
-    reconciled_amount: Mapped[float] = mapped_column(Float, default=0.0)
-    unreconciled_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    total_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
+    reconciled_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
+    unreconciled_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
 
     orders: Mapped[list["Order"]] = relationship(back_populates="batch", cascade="all, delete-orphan")
     payments: Mapped[list["Payment"]] = relationship(back_populates="batch", cascade="all, delete-orphan")
@@ -49,10 +53,10 @@ class Order(Base):
     sku: Mapped[str] = mapped_column(String(64), index=True)
     product_name: Mapped[str] = mapped_column(String(200))
     quantity: Mapped[int] = mapped_column(Integer)
-    unit_price: Mapped[float] = mapped_column(Float)
-    gross_amount: Mapped[float] = mapped_column(Float)
-    discount_amount: Mapped[float] = mapped_column(Float, default=0.0)
-    net_amount: Mapped[float] = mapped_column(Float)
+    unit_price: Mapped[Decimal] = mapped_column(MoneyCol)
+    gross_amount: Mapped[Decimal] = mapped_column(MoneyCol)
+    discount_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
+    net_amount: Mapped[Decimal] = mapped_column(MoneyCol)
     status: Mapped[str] = mapped_column(String(32), index=True)
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="orders")
@@ -66,7 +70,7 @@ class Payment(Base):
     payment_id: Mapped[str] = mapped_column(String(64), index=True)
     order_id: Mapped[str] = mapped_column(String(64), index=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    amount: Mapped[float] = mapped_column(Float)
+    amount: Mapped[Decimal] = mapped_column(MoneyCol)
     method: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), index=True)
     transaction_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
@@ -102,7 +106,7 @@ class ReconciliationIssue(Base):
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text)
     recommended_action: Mapped[str] = mapped_column(Text)
-    amount_impact: Mapped[float] = mapped_column(Float, default=0.0)
+    amount_impact: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
     status: Mapped[str] = mapped_column(String(32), default="open", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

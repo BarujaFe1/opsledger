@@ -1,7 +1,14 @@
 from datetime import datetime
-from typing import Literal, Optional
+from decimal import Decimal
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
+
+# JSON keeps numbers for the current Next.js client; values are quantized to cents first.
+MoneyOut = Annotated[
+    Decimal,
+    PlainSerializer(lambda v: float(Decimal(v).quantize(Decimal("0.01"))), return_type=float),
+]
 
 
 class HealthResponse(BaseModel):
@@ -20,9 +27,9 @@ class ImportBatchOut(BaseModel):
     total_payments: int
     total_stock_movements: int
     total_issues: int
-    total_amount: float
-    reconciled_amount: float
-    unreconciled_amount: float
+    total_amount: MoneyOut
+    reconciled_amount: MoneyOut
+    unreconciled_amount: MoneyOut
 
 
 class IssueOut(BaseModel):
@@ -37,7 +44,7 @@ class IssueOut(BaseModel):
     title: str
     description: str
     recommended_action: str
-    amount_impact: float
+    amount_impact: MoneyOut
     status: str
     created_at: datetime
     updated_at: datetime
@@ -88,6 +95,7 @@ class DashboardOut(BaseModel):
     reconciled_amount: float
     unreconciled_amount: float
     total_issues: int
+    open_issues_count: int = 0
     issues_by_severity: list[SeverityCount]
     issues_by_type: list[TypeCount]
     top_channels_with_divergence: list[ChannelImpact]
