@@ -15,11 +15,16 @@ from app.models import (
     ImportBatch,
     IssueStatusHistory,
     Order,
+    OrderLine,
     Payment,
     ReconciliationIssue,
     StockMovement,
 )
-from app.reconciliation.engine import MONEY_ISSUE_TYPES, compute_amounts, run_reconciliation
+from app.reconciliation.engine import (
+    MONEY_ISSUE_TYPES,
+    compute_kpis,
+    run_reconciliation,
+)
 from app.services.csv_validation import (
     CsvValidationError,
     preview_df,
@@ -37,11 +42,18 @@ def _persist_frames(
     payments_df: pd.DataFrame,
     stock_df: pd.DataFrame,
 ) -> None:
+    # Order is now a header; lines live on OrderLine (item grain). A single CSV
+    # row maps to one OrderLine. Multiple rows sharing an order_id map to
+    # multiple lines of the same order (future multi-line imports).
+    line_seq: dict[str, int] = {}
     for _, row in orders_df.iterrows():
+        oid = str(row["order_id"])
+        seq = line_seq.get(oid, 0) + 1
+        line_seq[oid] = seq
         db.add(
             Order(
                 batch_id=batch.id,
-                order_id=str(row["order_id"]),
+                order_id=oid,
                 order_date=to_naive_utc(row["order_date"]),
                 customer_name=str(row["customer_name"]),
                 customer_document_optional=(
@@ -50,6 +62,14 @@ def _persist_frames(
                     else str(row.get("customer_document_optional"))
                 ),
                 channel=str(row["channel"]),
+                status=str(row["status"]),
+            )
+        )
+        db.add(
+            OrderLine(
+                batch_id=batch.id,
+                order_id=oid,
+                line_id=f"{oid}-L{seq}",
                 sku=str(row["sku"]),
                 product_name=str(row["product_name"]),
                 quantity=int(row["quantity"]),
@@ -57,7 +77,6 @@ def _persist_frames(
                 gross_amount=money(row["gross_amount"]),
                 discount_amount=money(row["discount_amount"]),
                 net_amount=money(row["net_amount"]),
-                status=str(row["status"]),
             )
         )
     for _, row in payments_df.iterrows():
@@ -110,7 +129,7 @@ def process_import(
 
     try:
         drafts = run_reconciliation(orders_df, payments_df, stock_df)
-        total_amount, reconciled, unreconciled = compute_amounts(orders_df, payments_df, drafts)
+        kpi = compute_kpis(orders_df, payments_df, drafts)
 
         _persist_frames(db, batch, orders_df, payments_df, stock_df)
 
@@ -134,9 +153,9 @@ def process_import(
         batch.total_payments = int(len(payments_df))
         batch.total_stock_movements = int(len(stock_df))
         batch.total_issues = len(drafts)
-        batch.total_amount = total_amount
-        batch.reconciled_amount = reconciled
-        batch.unreconciled_amount = unreconciled
+        batch.total_amount = kpi["eligible_amount"]
+        batch.reconciled_amount = kpi["reconciled_amount"]
+        batch.unreconciled_amount = kpi["unreconciled_amount"]
         batch.status = "completed"
         db.commit()
         db.refresh(batch)
@@ -222,32 +241,63 @@ def get_batch_or_404(db: Session, batch_id: int) -> ImportBatch:
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def _open_money_unreconciled(issues: list[ReconciliationIssue], total_amount) -> tuple:
-    """Recompute open financial exposure from issues still open/reviewing."""
-    unreconciled = ZERO
-    seen: set[tuple[str, str]] = set()
-    for issue in issues:
-        if issue.status not in {"open", "reviewing"}:
-            continue
-        if issue.issue_type not in MONEY_ISSUE_TYPES:
-            continue
-        key = (issue.issue_type, issue.entity_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        unreconciled += money(issue.amount_impact)
-    unreconciled = money(unreconciled)
-    total = money(total_amount)
-    if total > ZERO:
-        unreconciled = min(unreconciled, total)
-    reconciled = money(max(total - unreconciled, ZERO))
-    return reconciled, unreconciled
+def _build_orm_frames(orders_orm, lines_orm, payments_orm):
+    """Build order-grain + payment DataFrames from ORM rows for compute_kpis.
+
+    OrderLine money is aggregated to order grain (order_id). Channel/status come
+    from the Order header. Needed because the grain split moved money off Order.
+    """
+    order_meta = {o.order_id: (o.channel, o.status) for o in orders_orm}
+    line_rows = [
+        {
+            "order_id": ln.order_id,
+            "sku": ln.sku,
+            "quantity": ln.quantity,
+            "net_amount": ln.net_amount,
+        }
+        for ln in lines_orm
+    ]
+    if line_rows:
+        lines_df = pd.DataFrame(line_rows)
+        grp = lines_df.groupby("order_id", as_index=False).agg(
+            net_amount=("net_amount", "sum"),
+            quantity=("quantity", "sum"),
+            sku=("sku", "first"),
+        )
+        grp["channel"] = grp["order_id"].map(lambda oid: order_meta.get(oid, ("", ""))[0])
+        grp["status"] = grp["order_id"].map(lambda oid: order_meta.get(oid, ("", ""))[1])
+        orders_df = grp
+    else:
+        orders_df = pd.DataFrame(columns=["order_id", "net_amount", "quantity", "sku", "channel", "status"])
+
+    pay_rows = [
+        {
+            "payment_id": p.payment_id,
+            "order_id": p.order_id,
+            "amount": p.amount,
+            "status": p.status,
+        }
+        for p in payments_orm
+    ]
+    payments_df = (
+        pd.DataFrame(pay_rows)
+        if pay_rows
+        else pd.DataFrame(columns=["payment_id", "order_id", "amount", "status"])
+    )
+    return orders_df, payments_df
 
 
-def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict:
-    """Compute dashboard metrics from already-loaded issues/orders.
+def _dashboard_from_data(
+    batch: ImportBatch, issues: list, orders_df: pd.DataFrame, payments_df: pd.DataFrame
+) -> dict:
+    """Compute dashboard metrics from already-loaded issues + order/payment frames.
 
     Shared by the DB-backed path and the stateless public demo path.
+
+    Channel impact is restricted to MONEY_ISSUE_TYPES and deduped by
+    (issue_type, entity_id), so it can never exceed unreconciled_amount
+    (no financial double-counting). The KPI decomposition comes from
+    compute_kpis and satisfies eligible = reconciled + missing + under + over.
     """
     by_sev: dict[str, int] = {}
     by_type: dict[str, int] = {}
@@ -255,17 +305,26 @@ def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict
         by_sev[issue.severity] = by_sev.get(issue.severity, 0) + 1
         by_type[issue.issue_type] = by_type.get(issue.issue_type, 0) + 1
 
-    # channel impact from order-linked issues (open + reviewing only for actionable impact)
-    order_channel = {o.order_id: o.channel for o in orders}
-    channel_stats: dict[str, dict[str, float]] = {}
+    # Channel impact: MONEY_ISSUE_TYPES only, deduped. Invariant:
+    # sum(impact per channel) <= unreconciled_amount.
+    order_channel = (
+        {str(o["order_id"]): str(o.get("channel", "")) for _, o in orders_df.iterrows()}
+        if not orders_df.empty
+        else {}
+    )
+    channel_stats: dict[str, dict[str, Decimal]] = {}
+    seen: set[tuple[str, str]] = set()
+    open_statuses = {"open", "reviewing"}
     for issue in issues:
-        if issue.status not in {"open", "reviewing"}:
+        if issue.status not in open_statuses:
             continue
-        channel = None
-        if issue.entity_type == "order":
-            channel = order_channel.get(issue.entity_id)
-        if issue.issue_type == "channel_standardization":
-            channel = issue.entity_id
+        if issue.issue_type not in MONEY_ISSUE_TYPES:
+            continue
+        key = (issue.issue_type, issue.entity_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        channel = order_channel.get(str(issue.entity_id))
         if not channel:
             continue
         bucket = channel_stats.setdefault(channel, {"impact": ZERO, "issues": 0})
@@ -282,7 +341,7 @@ def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict
     )[:5]
 
     next_action = None
-    open_issues = [i for i in issues if i.status in {"open", "reviewing"}]
+    open_issues = [i for i in issues if i.status in open_statuses]
     if open_issues:
         top = sorted(
             open_issues,
@@ -294,15 +353,20 @@ def _dashboard_from_data(batch: ImportBatch, issues: list, orders: list) -> dict
     else:
         next_action = "Todas as issues foram resolvidas ou ignoradas. Fechamento pronto para revisão final."
 
-    total_amount = money(batch.total_amount or 0)
-    reconciled, unreconciled = _open_money_unreconciled(issues, total_amount)
+    kpi = compute_kpis(orders_df, payments_df, issues)
 
     return {
         "batch_id": batch.id,
         "total_orders": batch.total_orders,
-        "total_order_amount": as_json_number(total_amount),
-        "reconciled_amount": as_json_number(reconciled),
-        "unreconciled_amount": as_json_number(unreconciled),
+        "total_order_amount": as_json_number(kpi["eligible_amount"]),
+        "reconciled_amount": as_json_number(kpi["reconciled_amount"]),
+        "unreconciled_amount": as_json_number(kpi["unreconciled_amount"]),
+        "eligible_amount": as_json_number(kpi["eligible_amount"]),
+        "missing_payment_amount": as_json_number(kpi["missing_payment_amount"]),
+        "underpayment_amount": as_json_number(kpi["underpayment_amount"]),
+        "overpayment_amount": as_json_number(kpi["overpayment_amount"]),
+        "orphan_payment_amount": as_json_number(kpi["orphan_payment_amount"]),
+        "pending_excluded_amount": as_json_number(kpi["pending_excluded_amount"]),
         "total_issues": batch.total_issues,
         "open_issues_count": len(open_issues),
         "issues_by_severity": [
@@ -321,8 +385,11 @@ def build_dashboard(db: Session, batch: ImportBatch) -> dict:
         .filter(ReconciliationIssue.batch_id == batch.id)
         .all()
     )
-    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
-    return _dashboard_from_data(batch, issues, orders)
+    orders_orm = db.query(Order).filter(Order.batch_id == batch.id).all()
+    lines_orm = db.query(OrderLine).filter(OrderLine.batch_id == batch.id).all()
+    payments_orm = db.query(Payment).filter(Payment.batch_id == batch.id).all()
+    orders_df, payments_df = _build_orm_frames(orders_orm, lines_orm, payments_orm)
+    return _dashboard_from_data(batch, issues, orders_df, payments_df)
 
 
 def update_issue_status(
@@ -354,9 +421,9 @@ def update_issue_status(
     return issue
 
 
-def _report_from_data(batch: ImportBatch, issues: list, orders: list) -> str:
-    """Build the closing-report markdown from already-loaded issues/orders."""
-    dash = _dashboard_from_data(batch, issues, orders)
+def _report_from_data(batch: ImportBatch, issues: list, orders_df: pd.DataFrame, payments_df: pd.DataFrame) -> str:
+    """Build the closing-report markdown from already-loaded issues/order frames."""
+    dash = _dashboard_from_data(batch, issues, orders_df, payments_df)
     issues_sorted = sorted(
         issues,
         key=lambda i: (SEVERITY_RANK.get(i.severity, 9), -float(money(i.amount_impact or 0))),
@@ -366,16 +433,26 @@ def _report_from_data(batch: ImportBatch, issues: list, orders: list) -> str:
         "",
         f"**Fonte:** {batch.source_name}  ",
         f"**Status do batch:** {batch.status}  ",
-        f"**Gerado em:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        f"**Gerado em:** {(batch.created_at or datetime.now(timezone.utc)).strftime('%Y-%m-%d %H:%M UTC')}",
         "",
         "## Indicadores",
         "",
         f"- Pedidos: **{dash['total_orders']}**",
-        f"- Valor total: **R$ {dash['total_order_amount']:.2f}**",
+        f"- Valor elegível (pagos/enviados): **R$ {dash['eligible_amount']:.2f}**",
         f"- Valor conciliado (issues abertas): **R$ {dash['reconciled_amount']:.2f}**",
         f"- Valor em divergência (issues abertas): **R$ {dash['unreconciled_amount']:.2f}**",
         f"- Issues totais: **{dash['total_issues']}**",
         f"- Issues abertas/em revisão: **{dash['open_issues_count']}**",
+        "",
+        "## Decomposição de valor elegível",
+        "",
+        f"- Elegível: **R$ {dash['eligible_amount']:.2f}**",
+        f"- Conciliado: **R$ {dash['reconciled_amount']:.2f}**",
+        f"- Pagamento ausente: **R$ {dash['missing_payment_amount']:.2f}**",
+        f"- Subpagamento (under): **R$ {dash['underpayment_amount']:.2f}**",
+        f"- Superpagamento (over): **R$ {dash['overpayment_amount']:.2f}**",
+        f"- Pagamento órfão (sem pedido): **R$ {dash['orphan_payment_amount']:.2f}**",
+        f"- Pendentes excluídos (criado/cancelado/devolvido): **R$ {dash['pending_excluded_amount']:.2f}**",
         "",
         "## Issues por severidade",
         "",
@@ -404,8 +481,11 @@ def build_report_markdown(db: Session, batch: ImportBatch) -> str:
         .filter(ReconciliationIssue.batch_id == batch.id)
         .all()
     )
-    orders = db.query(Order).filter(Order.batch_id == batch.id).all()
-    return _report_from_data(batch, issues, orders)
+    orders_orm = db.query(Order).filter(Order.batch_id == batch.id).all()
+    lines_orm = db.query(OrderLine).filter(OrderLine.batch_id == batch.id).all()
+    payments_orm = db.query(Payment).filter(Payment.batch_id == batch.id).all()
+    orders_df, payments_df = _build_orm_frames(orders_orm, lines_orm, payments_orm)
+    return _report_from_data(batch, issues, orders_df, payments_df)
 
 
 def issues_to_csv_rows(issues: list[ReconciliationIssue]) -> list[dict]:
@@ -465,7 +545,7 @@ def _build_demo_payload() -> dict:
     payments_df = validate_payments(demo / "payments.csv")
     stock_df = validate_stock(demo / "stock_movements.csv")
     drafts = run_reconciliation(orders_df, payments_df, stock_df)
-    total_amount, reconciled, unreconciled = compute_amounts(orders_df, payments_df, drafts)
+    kpi = compute_kpis(orders_df, payments_df, drafts)
 
     issues = [
         ReconciliationIssue(
@@ -486,7 +566,13 @@ def _build_demo_payload() -> dict:
         for idx, d in enumerate(drafts)
     ]
     orders = [
-        Order(order_id=str(r["order_id"]), channel=str(r["channel"]))
+        Order(
+            order_id=str(r["order_id"]),
+            order_date=to_naive_utc(r["order_date"]),
+            customer_name=str(r["customer_name"]),
+            channel=str(r["channel"]),
+            status=str(r["status"]),
+        )
         for _, r in orders_df.iterrows()
     ]
     batch = ImportBatch(
@@ -498,12 +584,12 @@ def _build_demo_payload() -> dict:
         total_payments=int(len(payments_df)),
         total_stock_movements=int(len(stock_df)),
         total_issues=len(drafts),
-        total_amount=total_amount,
-        reconciled_amount=reconciled,
-        unreconciled_amount=unreconciled,
+        total_amount=kpi["eligible_amount"],
+        reconciled_amount=kpi["reconciled_amount"],
+        unreconciled_amount=kpi["unreconciled_amount"],
     )
-    dashboard = _dashboard_from_data(batch, issues, orders)
-    report_md = _report_from_data(batch, issues, orders)
+    dashboard = _dashboard_from_data(batch, issues, orders_df, payments_df)
+    report_md = _report_from_data(batch, issues, orders_df, payments_df)
     return {
         "batch": batch,
         "issues": issues,

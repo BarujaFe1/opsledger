@@ -62,6 +62,12 @@ export type Dashboard = {
   total_order_amount: number;
   reconciled_amount: number;
   unreconciled_amount: number;
+  eligible_amount: number;
+  missing_payment_amount: number;
+  underpayment_amount: number;
+  overpayment_amount: number;
+  orphan_payment_amount: number;
+  pending_excluded_amount: number;
   total_issues: number;
   open_issues_count?: number;
   issues_by_severity: { severity: string; count: number }[];

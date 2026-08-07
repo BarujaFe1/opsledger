@@ -64,9 +64,17 @@ def rule_missing_payment(orders: pd.DataFrame, payments: pd.DataFrame) -> list[I
     if orders.empty:
         return issues
     approved = _approved_payments(payments)
-    paid_orders = orders[orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
     paid_order_ids = set(approved["order_id"].astype(str)) if not approved.empty else set()
-    for _, row in paid_orders.iterrows():
+    # Aggregate at order grain: one issue per order_id, net = sum of its lines.
+    fulfilled = orders[orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
+    if fulfilled.empty:
+        return issues
+    order_net = fulfilled.groupby("order_id", as_index=False).agg(
+        net_amount=("net_amount", "sum"),
+        channel=("channel", "first"),
+        status=("status", "first"),
+    )
+    for _, row in order_net.iterrows():
         oid = str(row["order_id"])
         if oid not in paid_order_ids:
             impact = money(row["net_amount"])
@@ -200,6 +208,8 @@ def rule_missing_stock_out(orders: pd.DataFrame, stock: pd.DataFrame) -> list[Is
     if orders.empty:
         return issues
     fulfilled = orders[orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
+    if fulfilled.empty:
+        return issues
     outs = stock[stock["movement_type"].astype(str).str.lower() == "out"] if not stock.empty else stock
     out_keys = set()
     if not outs.empty:
@@ -208,22 +218,32 @@ def rule_missing_stock_out(orders: pd.DataFrame, stock: pd.DataFrame) -> list[Is
             sku = str(row.get("sku") or "")
             if ref:
                 out_keys.add((ref, sku))
-    for _, row in fulfilled.iterrows():
-        key = (str(row["order_id"]), str(row["sku"]))
+    # Order grain: expected qty/net = sum of the order's lines.
+    grp = fulfilled.groupby("order_id", as_index=False).agg(
+        quantity=("quantity", "sum"),
+        net_amount=("net_amount", "sum"),
+        sku=("sku", "first"),
+        channel=("channel", "first"),
+        status=("status", "first"),
+    )
+    for _, row in grp.iterrows():
+        oid = str(row["order_id"])
+        key = (oid, str(row["sku"]))
         if key not in out_keys:
+            impact = money(row["net_amount"])
             issues.append(
                 IssueDraft(
                     issue_type="missing_stock_out",
                     severity="medium",
                     entity_type="order",
-                    entity_id=str(row["order_id"]),
-                    title=f"Pedido {row['order_id']} sem baixa de estoque",
+                    entity_id=oid,
+                    title=f"Pedido {oid} sem baixa de estoque",
                     description=(
-                        f"Pedido {row['status']} do SKU {row['sku']} não possui movimento 'out' "
-                        "vinculado ao order_id."
+                        f"Pedido {row['status']} do SKU {row['sku']} (qtd {int(row['quantity'])}) "
+                        "não possui movimento 'out' vinculado ao order_id."
                     ),
                     recommended_action="Revisar baixa de estoque.",
-                    amount_impact=money(row["net_amount"]),
+                    amount_impact=impact,
                     channel=str(row.get("channel", "")),
                 )
             )
@@ -350,3 +370,95 @@ def compute_amounts(
         unreconciled = min(unreconciled, total_amount)
     reconciled = money(max(total_amount - unreconciled, ZERO))
     return total_amount, reconciled, unreconciled
+
+
+def compute_kpis(
+    orders: pd.DataFrame,
+    payments: pd.DataFrame,
+    issues: Iterable,
+) -> dict:
+    """Decomposed, non-inflationary financial KPIs on the eligible (order) grain.
+
+    Base = fulfilled orders (paid/shipped). Canceled/returned/created are
+    `pending_excluded` and live outside the reconciliation base.
+    Invariant: eligible = reconciled + missing + under + over.
+    `orphan_payment` is payments-side (money received without an order) and is
+    reported separately, never subtracted from eligible.
+    Under/over are derived from the data for OPEN amount_mismatch order_ids so
+    the split stays consistent with the live issue set.
+    """
+    if orders.empty:
+        eligible = ZERO
+        pending_excluded = ZERO
+    else:
+        fulfilled = orders[orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
+        excluded = orders[~orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
+        eligible = (
+            money_sum([money(v) for v in fulfilled["net_amount"].tolist()])
+            if not fulfilled.empty
+            else ZERO
+        )
+        pending_excluded = (
+            money_sum([money(v) for v in excluded["net_amount"].tolist()])
+            if not excluded.empty
+            else ZERO
+        )
+
+    seen: set[tuple[str, str]] = set()
+    missing = ZERO
+    orphan = ZERO
+    mismatch_order_ids: set[str] = set()
+    open_statuses = {"open", "reviewing"}
+    for issue in issues:
+        st = getattr(issue, "status", "open")
+        if st not in open_statuses:
+            continue
+        it = issue.issue_type
+        if it not in MONEY_ISSUE_TYPES:
+            continue
+        key = (it, issue.entity_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        amt = money(issue.amount_impact)
+        if it == "missing_payment":
+            missing += amt
+        elif it == "orphan_payment":
+            orphan += amt
+        elif it == "amount_mismatch":
+            mismatch_order_ids.add(str(issue.entity_id))
+
+    under = ZERO
+    over = ZERO
+    if mismatch_order_ids and not orders.empty and not payments.empty:
+        approved = _approved_payments(payments)
+        if not approved.empty:
+            pay_sum = approved.groupby("order_id", as_index=False)["amount"].sum().rename(
+                columns={"amount": "paid_sum"}
+            )
+            order_net = orders.groupby("order_id", as_index=False)["net_amount"].sum()
+            merged = order_net.merge(pay_sum, on="order_id", how="inner")
+            for _, row in merged.iterrows():
+                oid = str(row["order_id"])
+                if oid not in mismatch_order_ids:
+                    continue
+                net = money(row["net_amount"])
+                paid = money(row["paid_sum"])
+                diff = net - paid
+                if diff > AMOUNT_TOLERANCE:
+                    under += money(diff)
+                elif -diff > AMOUNT_TOLERANCE:
+                    over += money(-diff)
+
+    unreconciled = money(missing + under + over)
+    reconciled = money(max(eligible - unreconciled, ZERO))
+    return {
+        "eligible_amount": eligible,
+        "reconciled_amount": reconciled,
+        "unreconciled_amount": unreconciled,
+        "missing_payment_amount": missing,
+        "underpayment_amount": under,
+        "overpayment_amount": over,
+        "orphan_payment_amount": orphan,
+        "pending_excluded_amount": pending_excluded,
+    }

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -41,6 +41,14 @@ class ImportBatch(Base):
 
 
 class Order(Base):
+    """Order header — one row per order_id (may repeat by design for duplicates).
+
+    Money lives on OrderLine (item grain). The header carries only order-level
+    identity/dimension columns. OrderLine.order_id is a logical link (indexed
+    String), not a DB FK, because order_id is intentionally non-unique
+    (rule_duplicate_order emits for repeated order_ids).
+    """
+
     __tablename__ = "orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -50,6 +58,20 @@ class Order(Base):
     customer_name: Mapped[str] = mapped_column(String(160))
     customer_document_optional: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     channel: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+
+    batch: Mapped["ImportBatch"] = relationship(back_populates="orders")
+
+
+class OrderLine(Base):
+    """Item-grain line of an Order. Multiple lines may share one order_id."""
+
+    __tablename__ = "order_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batches.id"), index=True)
+    order_id: Mapped[str] = mapped_column(String(64), index=True)
+    line_id: Mapped[str] = mapped_column(String(64))
     sku: Mapped[str] = mapped_column(String(64), index=True)
     product_name: Mapped[str] = mapped_column(String(200))
     quantity: Mapped[int] = mapped_column(Integer)
@@ -57,9 +79,8 @@ class Order(Base):
     gross_amount: Mapped[Decimal] = mapped_column(MoneyCol)
     discount_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
     net_amount: Mapped[Decimal] = mapped_column(MoneyCol)
-    status: Mapped[str] = mapped_column(String(32), index=True)
 
-    batch: Mapped["ImportBatch"] = relationship(back_populates="orders")
+    __table_args__ = (UniqueConstraint("order_id", "line_id", name="uq_order_line"),)
 
 
 class Payment(Base):

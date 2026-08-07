@@ -111,3 +111,35 @@ A revisão encontrou **gaps reais** que enfraquecem a credibilidade sob escrutí
 **Forte:** problema real, engine pura testável, jornada E2E, honestidade de escopo, demo viva.  
 **Frágil:** float money, `/tmp`, sem CI (pré-pass), UI sem testes.  
 **Narrativa recomendada:** Analytics Engineering / Ops Analytics — não “fintech platform”.
+
+---
+
+## 10. Addendum — Fase 2a (2026-08)
+
+Após o merge da Fase 1 (PR #1, `a40d867`), a Fase 2a atacou os riscos estruturais de
+**grain** e **integridade de KPIs financeiros** que o pass 1 deixou de fora por escopo.
+
+### Riscos fechados nesta fase
+| Risco (pré-Fase 2a) | Severidade | Resolução |
+|---------------------|------------|-----------|
+| `order == order_line` no modelo | Alto | `Order` (cabeçalho) + `OrderLine` (item); regras agregam por `order_id` |
+| Duplicação de issues ao iterar linhas | Médio | `groupby("order_id")` em `missing_payment`/`missing_stock_out` |
+| Double-counting financeiro no impacto por canal | Alto | impacto restrito a `MONEY_ISSUE_TYPES` + dedup `(issue_type, entity_id)` |
+| KPIs sem decomposição (só elegível/divergência) | Médio | `compute_kpis`: missing/under/over/orphan/pending-excluded com invariante |
+
+### Invariante central (novo)
+`eligible_amount = reconciled_amount + missing_payment_amount + underpayment_amount + overpayment_amount`
+
+Validado no dataset dourado: `22478.5 = 21152.9 + 1179.1 + 146.5 + 0`.  
+Impacto por canal sem inflação: `sum(impact) = 1325.6 == unreconciled_amount 1325.6`.
+
+### O que permanece fora de escopo (Fase 2b)
+- Múltiplos pagamentos por pedido (split / parcial / excesso / refund) com modelo dedicado.
+- Reconciliação de estoque com saldo de abertura + janela temporal + quantidade esperada/real.
+- Versionamento de regras (`rule_id`, `versão`, `evidence`, `fingerprint`).
+
+### Nota de verificação
+CI deve rodar no SHA novo (não reusar verde do SHA anterior). Backend 47 passed; front
+`tsc`/`lint`/`vitest`/`build` verdes. Merge via **merge commit** (não squash), por
+convenção de histórico documentário do projeto.
+
