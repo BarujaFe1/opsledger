@@ -106,6 +106,9 @@ export default function IssueDetailPage() {
       <div className="mt-6 grid gap-4 sm:grid-cols-2">
         <Info label="Entidade" value={`${issue.entity_type} · ${issue.entity_id}`} />
         <Info label={issueImpactLabel(issue.issue_type)} value={formatBRL(issue.amount_impact)} />
+        {issue.entity_type === "order" ? (
+          <Info label="Pedido associado" value={issue.entity_id} />
+        ) : null}
       </div>
 
       <div className="mt-6 rounded-2xl border border-accent/25 bg-accent-muted/40 p-4">

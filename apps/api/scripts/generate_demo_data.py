@@ -141,6 +141,7 @@ def generate(seed: int = 42) -> None:
                     "method": method,
                     "status": pay_status,
                     "transaction_reference": f"TX-{10000 + i}",
+                    "kind": "payment",
                 }
             )
             # Default stock out
@@ -176,6 +177,7 @@ def generate(seed: int = 42) -> None:
                 "method": "pix",
                 "status": "paid",
                 "transaction_reference": f"TX-ORPH-{j}",
+                "kind": "payment",
             }
         )
 
@@ -194,6 +196,7 @@ def generate(seed: int = 42) -> None:
                     "method": "pix",
                     "status": "paid",
                     "transaction_reference": f"TX-MM-{oid}",
+                    "kind": "payment",
                 }
             )
         else:
@@ -253,6 +256,7 @@ def generate(seed: int = 42) -> None:
                     "method": "pix",
                     "status": "paid",
                     "transaction_reference": f"TX-FIX-{oid}",
+                    "kind": "payment",
                 }
             )
 
@@ -288,6 +292,139 @@ def generate(seed: int = 42) -> None:
             }
         )
 
+    # 7) Refund / chargeback / multi-payment scenarios (Fase 2b.1).
+    #    Each scenario targets a *clean* paid order (exactly one default payment,
+    #    not already part of another divergence) so the demo exercises the new
+    #    cash-realization + refund-anomaly rules without disturbing the existing
+    #    payment-matching divergences.
+    refund_ids: list[str] = []
+    chargeback_ids: list[str] = []
+    over_refund_ids: list[str] = []
+    multi_pay_ids: list[str] = []
+    refund_without_payment_ids: list[str] = []
+
+    _divergence_oids = (
+        set(missing_payment_ids)
+        | set(amount_mismatch_ids)
+        | set(missing_stock_ids)
+        | set(duplicate_ids)
+    )
+
+    def _clean_paid_order(exclude: set[str]) -> str | None:
+        for o in orders:
+            oid = o["order_id"]
+            if o["status"] != "paid" or oid in _divergence_oids or oid in exclude:
+                continue
+            pays = [
+                p
+                for p in payments
+                if p["order_id"] == oid and p.get("status") == "paid" and p.get("kind", "payment") == "payment"
+            ]
+            if len(pays) == 1:
+                return oid
+        return None
+
+    # (a) Regular refund (Case B): order stays reconciled 100%; only cash net is reduced.
+    oid = _clean_paid_order(exclude=set())
+    if oid:
+        o = next(x for x in orders if x["order_id"] == oid)
+        amt = round(float(o["net_amount"]) * 0.4, 2)
+        payments.append(
+            {
+                "payment_id": f"PAY-REF-{oid}",
+                "order_id": oid,
+                "paid_at": (datetime.fromisoformat(o["order_date"]) + timedelta(days=2)).isoformat(),
+                "amount": amt,
+                "method": "pix",
+                "status": "refunded",
+                "transaction_reference": f"TX-REF-{oid}",
+                "kind": "refund",
+            }
+        )
+        refund_ids.append(oid)
+
+    # (b) Chargeback (operational exposure): full reversal, net_cash -> 0 for this order.
+    oid = _clean_paid_order(exclude=set(refund_ids))
+    if oid:
+        o = next(x for x in orders if x["order_id"] == oid)
+        payments.append(
+            {
+                "payment_id": f"PAY-CB-{oid}",
+                "order_id": oid,
+                "paid_at": (datetime.fromisoformat(o["order_date"]) + timedelta(days=3)).isoformat(),
+                "amount": round(float(o["net_amount"]), 2),
+                "method": "credit_card",
+                "status": "charged_back",
+                "transaction_reference": f"TX-CB-{oid}",
+                "kind": "chargeback",
+            }
+        )
+        chargeback_ids.append(oid)
+
+    # (c) Over-refund (FINANCIAL): two refunds summing to > what was paid.
+    oid = _clean_paid_order(exclude=set(refund_ids) | set(chargeback_ids))
+    if oid:
+        o = next(x for x in orders if x["order_id"] == oid)
+        net_base = round(float(o["net_amount"]), 2)
+        for k, ramt in enumerate([round(net_base * 0.6, 2), round(net_base * 0.7, 2)], start=1):
+            payments.append(
+                {
+                    "payment_id": f"PAY-OVR-{oid}-{k}",
+                    "order_id": oid,
+                    "paid_at": (datetime.fromisoformat(o["order_date"]) + timedelta(days=1, hours=k)).isoformat(),
+                    "amount": ramt,
+                    "method": "pix",
+                    "status": "refunded",
+                    "transaction_reference": f"TX-OVR-{oid}-{k}",
+                    "kind": "refund",
+                }
+            )
+        over_refund_ids.append(oid)
+
+    # (d) Multi-payment (split, fully covered): split the default payment into two.
+    oid = _clean_paid_order(exclude=set(refund_ids) | set(chargeback_ids) | set(over_refund_ids))
+    if oid:
+        o = next(x for x in orders if x["order_id"] == oid)
+        default_pay = next(p for p in payments if p["order_id"] == oid and p.get("status") == "paid")
+        total = float(default_pay["amount"])
+        p1 = round(total * 0.6, 2)
+        p2 = round(total - p1, 2)
+        default_pay["amount"] = p1
+        default_pay["kind"] = "payment"
+        payments.append(
+            {
+                "payment_id": f"PAY-SPLIT-{oid}",
+                "order_id": oid,
+                "paid_at": (datetime.fromisoformat(o["order_date"]) + timedelta(hours=2)).isoformat(),
+                "amount": p2,
+                "method": default_pay.get("method", "pix"),
+                "status": "paid",
+                "transaction_reference": f"TX-SPLIT-{oid}",
+                "kind": "payment",
+            }
+        )
+        multi_pay_ids.append(oid)
+
+    # (e) Refund without payment (FINANCIAL): refund an order that has no payment.
+    #     ORD-0005 is a missing_payment order (status "paid", payments removed),
+    #     so a refund on it means cash went out that was never collected.
+    for oid in ["ORD-0005"]:
+        o = next(x for x in orders if x["order_id"] == oid)
+        amt = round(float(o["net_amount"]) * 0.5, 2)
+        payments.append(
+            {
+                "payment_id": f"PAY-RWP-{oid}",
+                "order_id": oid,
+                "paid_at": (base + timedelta(days=15)).isoformat(),
+                "amount": amt,
+                "method": "pix",
+                "status": "refunded",
+                "transaction_reference": f"TX-RWP-{oid}",
+                "kind": "refund",
+            }
+        )
+        refund_without_payment_ids.append(oid)
+
     # Pad payments into 140-155 range with pending/failed (non-approved) rows
     while len(payments) < 148:
         n = len(payments) + 1
@@ -300,6 +437,7 @@ def generate(seed: int = 42) -> None:
                 "method": random.choice(METHODS),
                 "status": random.choice(["pending", "failed", "refunded"]),
                 "transaction_reference": f"TX-PAD-{n}",
+                "kind": "payment",
             }
         )
 
@@ -322,6 +460,11 @@ def generate(seed: int = 42) -> None:
             "amount_mismatch": amount_mismatch_ids,
             "missing_stock": missing_stock_ids,
             "duplicates": duplicate_ids,
+            "refund": refund_ids,
+            "chargeback": chargeback_ids,
+            "over_refund": over_refund_ids,
+            "multi_payment": multi_pay_ids,
+            "refund_without_payment": refund_without_payment_ids,
         },
     }
 
@@ -340,6 +483,11 @@ def generate(seed: int = 42) -> None:
     print(f"amount_mismatch: {amount_mismatch_ids}")
     print(f"missing_stock: {missing_stock_ids}")
     print(f"duplicates: {duplicate_ids}")
+    print(f"refund: {refund_ids}")
+    print(f"chargeback: {chargeback_ids}")
+    print(f"over_refund: {over_refund_ids}")
+    print(f"multi_payment: {multi_pay_ids}")
+    print(f"refund_without_payment: {refund_without_payment_ids}")
 
 
 if __name__ == "__main__":

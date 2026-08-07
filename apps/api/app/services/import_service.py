@@ -108,6 +108,7 @@ def _persist_frames(
                 amount=money(row["amount"]),
                 method=str(row["method"]),
                 status=str(row["status"]),
+                kind=str(row["kind"]),
                 transaction_reference=(
                     None
                     if pd.isna(row.get("transaction_reference"))
@@ -295,13 +296,14 @@ def _build_orm_frames(orders_orm, lines_orm, payments_orm):
             "order_id": p.order_id,
             "amount": p.amount,
             "status": p.status,
+            "kind": p.kind,
         }
         for p in payments_orm
     ]
     payments_df = (
         pd.DataFrame(pay_rows)
         if pay_rows
-        else pd.DataFrame(columns=["payment_id", "order_id", "amount", "status"])
+        else pd.DataFrame(columns=["payment_id", "order_id", "amount", "status", "kind"])
     )
     return orders_df, payments_df
 
@@ -399,6 +401,10 @@ def _dashboard_from_data(
         "underpayment_amount": as_json_number(kpi["underpayment_amount"]),
         "overpayment_amount": as_json_number(kpi["overpayment_amount"]),
         "orphan_payment_amount": as_json_number(kpi["orphan_payment_amount"]),
+        "gross_paid_amount": as_json_number(kpi["gross_paid_amount"]),
+        "refunded_amount": as_json_number(kpi["refunded_amount"]),
+        "active_chargeback_amount": as_json_number(kpi["active_chargeback_amount"]),
+        "net_cash_amount": as_json_number(kpi["net_cash_amount"]),
         "pending_excluded_amount": as_json_number(kpi["pending_excluded_amount"]),
         "total_issues": batch.total_issues,
         "open_issues_count": len(open_issues),
@@ -462,6 +468,8 @@ FINANCIAL_ISSUE_TYPES = {
     "amount_mismatch",
     "duplicate_line",
     "header_conflict",
+    "refund_without_payment",
+    "over_refund",
 }
 
 
@@ -502,6 +510,13 @@ def _report_from_data(batch: ImportBatch, issues: list, orders_df: pd.DataFrame,
         f"- Superpagamento (over): **R$ {dash['overpayment_amount']:.2f}**",
         f"- Pagamento órfão (sem pedido): **R$ {dash['orphan_payment_amount']:.2f}**",
         f"- Pendentes excluídos (criado/cancelado/devolvido): **R$ {dash['pending_excluded_amount']:.2f}**",
+        "",
+        "## Realização de caixa (reversões posteriores)",
+        "",
+        f"- Recebido bruto (pagamentos): **R$ {dash['gross_paid_amount']:.2f}**",
+        f"- Reembolsado: **R$ {dash['refunded_amount']:.2f}**",
+        f"- Chargeback (exposição atual): **R$ {dash['active_chargeback_amount']:.2f}**",
+        f"- Caixa líquido: **R$ {dash['net_cash_amount']:.2f}**",
         "",
         "## Issues por severidade",
         "",

@@ -32,6 +32,21 @@
     "duplicates": [
       "ORD-0012",
       "ORD-0039"
+    ],
+    "refund": [
+      "ORD-0001"
+    ],
+    "chargeback": [
+      "ORD-0003"
+    ],
+    "over_refund": [
+      "ORD-0004"
+    ],
+    "multi_payment": [
+      "ORD-0006"
+    ],
+    "refund_without_payment": [
+      "ORD-0005"
     ]
   }
 }

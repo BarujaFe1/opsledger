@@ -67,6 +67,10 @@ export type Dashboard = {
   underpayment_amount: number;
   overpayment_amount: number;
   orphan_payment_amount: number;
+  gross_paid_amount: number;
+  refunded_amount: number;
+  active_chargeback_amount: number;
+  net_cash_amount: number;
   pending_excluded_amount: number;
   total_issues: number;
   open_issues_count?: number;

@@ -26,6 +26,9 @@ const ISSUE_TYPE_OPTIONS = [
   { value: "missing_stock_out", label: "Baixa de estoque ausente" },
   { value: "negative_stock", label: "Estoque negativo" },
   { value: "channel_standardization", label: "Canal não padronizado" },
+  { value: "refund_without_payment", label: "Reembolso sem pagamento" },
+  { value: "over_refund", label: "Reembolso acima do recebido" },
+  { value: "chargeback", label: "Chargeback" },
 ];
 
 export default function IssuesPage() {

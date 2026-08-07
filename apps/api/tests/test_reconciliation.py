@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.money import ZERO, money
 from app.db.session import Base, get_db
 from app.main import app
-from app.models import ImportBatch, Order, OrderLine
+from app.models import ImportBatch, Order, OrderLine, Payment
 from app.reconciliation.engine import (
     compute_kpis,
     rule_amount_mismatch,
@@ -23,9 +23,11 @@ from app.reconciliation.engine import (
     rule_missing_stock_out,
     rule_negative_stock,
     rule_orphan_payment,
+    rule_refund_anomalies,
     run_reconciliation,
 )
-from app.services.import_service import _persist_frames, issue_impact_term
+from app.services.csv_validation import CsvValidationError, validate_payments
+from app.services.import_service import _build_orm_frames, _persist_frames, issue_impact_term
 
 
 def _dt(s: str) -> datetime:
@@ -765,3 +767,286 @@ def test_dashboard_exposes_kpi_decomposition(client):
     assert dash["eligible_amount"] == 100.0
     assert dash["reconciled_amount"] == 100.0
     assert dash["unreconciled_amount"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fase 2b.1: multi-pagamentos + refunds/chargebacks
+# ---------------------------------------------------------------------------
+
+
+def _payment_row(pid, oid, amount, status, kind="payment"):
+    return {
+        "payment_id": pid,
+        "order_id": oid,
+        "paid_at": _dt("2026-06-01T11:00:00+00:00"),
+        "amount": amount,
+        "method": "pix",
+        "status": status,
+        "kind": kind,
+    }
+
+
+def test_multi_payment_order_covered():
+    """Two payments summing to the order net are a VALID multi-payment, not a
+    missing_payment (order_id is intentionally non-unique on Payment)."""
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 60.0, "paid"),
+            _payment_row("PAY-2", "ORD-1", 40.0, "paid"),
+        ]
+    )
+    issues = rule_missing_payment(orders, payments)
+    assert issues == []
+    kpi = compute_kpis(orders, payments, run_reconciliation(orders, payments, _stock([])))
+    assert kpi["missing_payment_amount"] == ZERO
+    assert kpi["reconciled_amount"] == money("100.00")
+
+
+def test_refund_does_not_reduce_reconciled():
+    """Order net R$100, paid R$100, refunded R$20.
+
+    The order was paid CORRECTLY, then cash was reversed. Refunds must NOT be
+    shown as 'underpayment' and must NOT reduce reconciled. They live in the
+    separate cash-realization dimension (net_cash).
+    """
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 100.0, "paid"),
+            _payment_row("PAY-R", "ORD-1", 20.0, "refunded", "refund"),
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    # No refund anomaly issue for a well-formed refund.
+    assert not any(i.issue_type in {"refund_without_payment", "over_refund", "chargeback"} for i in issues)
+    kpi = compute_kpis(orders, payments, issues)
+    # PAYMENT MATCHING dimension — refund does not touch it.
+    assert kpi["eligible_amount"] == money("100.00")
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["missing_payment_amount"] == ZERO
+    assert kpi["underpayment_amount"] == ZERO
+    # CASH REALIZATION dimension.
+    assert kpi["gross_paid_amount"] == money("100.00")
+    assert kpi["refunded_amount"] == money("20.00")
+    assert kpi["active_chargeback_amount"] == ZERO
+    assert kpi["net_cash_amount"] == money("80.00")
+    # Original invariant still holds (refunds aren't in it).
+    assert kpi["eligible_amount"] == (
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"] + kpi["underpayment_amount"]
+    )
+
+
+def test_chargeback_in_cash_dimension():
+    """Order net R$100, paid R$100, chargeback R$30.
+
+    The order was matched correctly (reconciled R$100, under R$0); the chargeback
+    is a posterior cash reversal shown as active exposure in the cash dimension,
+    never as an underpayment.
+    """
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 100.0, "paid"),
+            _payment_row("PAY-C", "ORD-1", 30.0, "charged_back", "chargeback"),
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    cb = [i for i in issues if i.issue_type == "chargeback"]
+    assert len(cb) == 1
+    assert cb[0].severity == "medium"
+    # Chargeback is operational, not a financial divergence issue.
+    assert issue_impact_term("chargeback") == "valor associado"
+    kpi = compute_kpis(orders, payments, issues)
+    # PAYMENT MATCHING — chargeback does not touch it.
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["underpayment_amount"] == ZERO
+    # CASH REALIZATION — chargeback is current exposure, reduces net_cash.
+    assert kpi["gross_paid_amount"] == money("100.00")
+    assert kpi["active_chargeback_amount"] == money("30.00")
+    assert kpi["net_cash_amount"] == money("70.00")
+
+
+def test_over_refund():
+    """Order net R$100, paid R$100, refunded R$130 -> over_refund anomaly (R$30).
+
+    The excess refund is a financial anomaly; it does NOT reduce reconciled
+    (the order was matched correctly). It shows in the cash dimension.
+    """
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 100.0, "paid"),
+            _payment_row("PAY-R", "ORD-1", 130.0, "refunded", "refund"),
+        ]
+    )
+    issues = rule_refund_anomalies(orders, payments)
+    over = [i for i in issues if i.issue_type == "over_refund"]
+    assert len(over) == 1
+    assert over[0].amount_impact == money("30.00")
+    assert over[0].severity == "high"
+    kpi = compute_kpis(orders, payments, run_reconciliation(orders, payments, _stock([])))
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["underpayment_amount"] == ZERO
+    assert kpi["gross_paid_amount"] == money("100.00")
+    assert kpi["refunded_amount"] == money("130.00")
+    assert kpi["net_cash_amount"] == money("-30.00")
+
+
+def test_refund_without_payment():
+    """Refund with no settled payment -> refund_without_payment anomaly.
+
+    The order genuinely has no payment, so it is ALSO a missing_payment in the
+    matching dimension (reconciled R$0); the refund is a separate cash anomaly.
+    """
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments([_payment_row("PAY-R", "ORD-1", 50.0, "refunded", "refund")])
+    issues = run_reconciliation(orders, payments, _stock([]))
+    types = {i.issue_type for i in issues}
+    assert "refund_without_payment" in types
+    # No payment at all -> also a missing_payment (matching dimension).
+    assert "missing_payment" in types
+    rwp = next(i for i in issues if i.issue_type == "refund_without_payment")
+    assert rwp.amount_impact == money("50.00")
+    kpi = compute_kpis(orders, payments, issues)
+    # CASH REALIZATION — gross paid is 0, refund 50 -> net cash negative.
+    assert kpi["gross_paid_amount"] == ZERO
+    assert kpi["refunded_amount"] == money("50.00")
+    assert kpi["net_cash_amount"] == money("-50.00")
+    # PAYMENT MATCHING — order never paid -> reconciled 0, missing 100.
+    assert kpi["missing_payment_amount"] == money("100.00")
+    assert kpi["reconciled_amount"] == ZERO
+
+
+def test_refund_two_dimension_invariants():
+    """Mixed batch: a regular refund+chargeback order, a clean order, and a
+    partial-refund order. Both invariants must hold:
+      PAYMENT MATCHING: eligible == reconciled + missing + under
+      CASH REALIZATION: net_cash == gross_paid - refunded - chargeback
+    """
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "status": "paid"},
+            {**BASE_ORDER, "order_id": "ORD-2", "sku": "SKU-A", "net_amount": 50.0, "status": "paid"},
+            {**BASE_ORDER, "order_id": "ORD-3", "sku": "SKU-A", "net_amount": 30.0, "status": "paid"},
+        ]
+    )
+    payments = _payments(
+        [
+            _payment_row("P1", "ORD-1", 100.0, "paid"),
+            _payment_row("PR", "ORD-1", 20.0, "refunded", "refund"),
+            _payment_row("PC", "ORD-1", 5.0, "charged_back", "chargeback"),
+            _payment_row("P2", "ORD-2", 50.0, "paid"),
+            # ORD-3: paid 30 + refunded 10 -> regular refund, reconciled stays 30.
+            _payment_row("P3", "ORD-3", 30.0, "paid"),
+            _payment_row("P3R", "ORD-3", 10.0, "refunded", "refund"),
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    # PAYMENT MATCHING: every order fully paid -> reconciled == eligible.
+    assert kpi["eligible_amount"] == money("180.00")
+    assert kpi["reconciled_amount"] == money("180.00")
+    assert kpi["missing_payment_amount"] == ZERO
+    assert kpi["underpayment_amount"] == ZERO
+    assert kpi["eligible_amount"] == (
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"] + kpi["underpayment_amount"]
+    )
+    # CASH REALIZATION.
+    assert kpi["gross_paid_amount"] == money("180.00")
+    assert kpi["refunded_amount"] == money("30.00")  # 20 + 10
+    assert kpi["active_chargeback_amount"] == money("5.00")
+    assert kpi["net_cash_amount"] == money("145.00")  # 180 - 30 - 5
+    assert kpi["net_cash_amount"] == (
+        kpi["gross_paid_amount"] - kpi["refunded_amount"] - kpi["active_chargeback_amount"]
+    )
+
+
+def test_refund_path_parity(tmp_path):
+    """CRITICAL: stateless CSV path must equal the DB-backed `_build_orm_frames`
+    path for refund/chargeback netting (the no-Alembic parity gotcha)."""
+    eng = create_engine(
+        f"sqlite:///{(tmp_path / 'parity.db').as_posix()}",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=eng)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+    with SessionLocal() as dbsession:
+        orders = _orders(
+            [
+                {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "status": "paid"},
+                {**BASE_ORDER, "order_id": "ORD-2", "sku": "SKU-A", "net_amount": 50.0, "status": "paid"},
+            ]
+        )
+        payments = _payments(
+            [
+                _payment_row("P1", "ORD-1", 100.0, "paid"),
+                _payment_row("PR", "ORD-1", 20.0, "refunded", "refund"),
+                _payment_row("PC", "ORD-1", 5.0, "charged_back", "chargeback"),
+                _payment_row("P2", "ORD-2", 50.0, "paid"),
+            ]
+        )
+        # Stateless (CSV) path.
+        issues_s = run_reconciliation(orders, payments, _stock([]))
+        kpi_s = compute_kpis(orders, payments, issues_s)
+
+        # DB-backed path.
+        batch = ImportBatch(source_name="t", status="processing")
+        dbsession.add(batch)
+        dbsession.flush()
+        _persist_frames(dbsession, batch, orders, payments, _stock([]))
+        dbsession.commit()
+        orders_orm = dbsession.query(Order).all()
+        lines_orm = dbsession.query(OrderLine).all()
+        payments_orm = dbsession.query(Payment).all()
+        o_df, p_df = _build_orm_frames(orders_orm, lines_orm, payments_orm)
+        issues_d = run_reconciliation(o_df, p_df, _stock([]))
+        kpi_d = compute_kpis(o_df, p_df, issues_d)
+
+        assert kpi_s == kpi_d
+        assert {i.issue_type for i in issues_s} == {i.issue_type for i in issues_d}
+
+
+# ---------------------------------------------------------------------------
+# Fase 2b.1: CSV validation for kind / sign
+# ---------------------------------------------------------------------------
+
+
+def test_validate_payments_defaults_kind_to_payment():
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,paid,TX-1\n"
+    )
+    df = validate_payments(io.StringIO(csv))
+    assert (df["kind"] == "payment").all()
+
+
+def test_validate_payments_accepts_refund_and_chargeback_kinds():
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,kind,transaction_reference\n"
+        "PAY-R,ORD-1,2026-06-01T11:00:00+00:00,20,pix,refunded,refund,TX-R\n"
+        "PAY-C,ORD-1,2026-06-01T12:00:00+00:00,30,pix,charged_back,chargeback,TX-C\n"
+    )
+    df = validate_payments(io.StringIO(csv))
+    assert set(df["kind"]) == {"refund", "chargeback"}
+
+
+def test_validate_payments_rejects_invalid_kind():
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,kind,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,paid,bogus,TX-1\n"
+    )
+    with pytest.raises(CsvValidationError) as exc:
+        validate_payments(io.StringIO(csv))
+    assert exc.value.code == "invalid_payment_kind"
+
+
+def test_validate_payments_rejects_negative_amount():
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,kind,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,-100,pix,paid,refund,TX-1\n"
+    )
+    with pytest.raises(CsvValidationError) as exc:
+        validate_payments(io.StringIO(csv))
+    assert exc.value.code == "negative_amount"
