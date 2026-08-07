@@ -425,7 +425,10 @@ def generate(seed: int = 42) -> None:
         )
         refund_without_payment_ids.append(oid)
 
-    # Pad payments into 140-155 range with pending/failed (non-approved) rows
+    # Pad payments into 140-155 range with pending/failed (non-approved) rows.
+    # NOTE: kind defaults to "payment" here, so status must stay a valid
+    # payment status (paid/pending/failed) — "refunded" would be an invalid
+    # (kind, status) pair under the data contract and make the demo CSV fail.
     while len(payments) < 148:
         n = len(payments) + 1
         payments.append(
@@ -435,7 +438,7 @@ def generate(seed: int = 42) -> None:
                 "paid_at": (base + timedelta(days=n % 30)).isoformat(),
                 "amount": round(random.uniform(20, 120), 2),
                 "method": random.choice(METHODS),
-                "status": random.choice(["pending", "failed", "refunded"]),
+                "status": random.choice(["pending", "failed"]),
                 "transaction_reference": f"TX-PAD-{n}",
                 "kind": "payment",
             }

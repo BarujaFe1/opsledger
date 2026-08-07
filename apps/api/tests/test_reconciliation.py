@@ -15,6 +15,7 @@ from app.db.session import Base, get_db
 from app.main import app
 from app.models import ImportBatch, Order, OrderLine, Payment
 from app.reconciliation.engine import (
+    _approved_payments,
     compute_kpis,
     rule_amount_mismatch,
     rule_channel_standardization,
@@ -1050,3 +1051,93 @@ def test_validate_payments_rejects_negative_amount():
     with pytest.raises(CsvValidationError) as exc:
         validate_payments(io.StringIO(csv))
     assert exc.value.code == "negative_amount"
+
+
+# --- Fase 2b.1 P1 hotfix: (kind, status) data contract -----------------------
+# A row's (kind, status) pair must be semantically valid. The two KPI dimensions
+# (PAYMENT MATCHING vs CASH REALIZATION) must never disagree on the same row.
+
+
+def test_validate_payments_rejects_refund_paid_pair():
+    """A refund can never be marked 'paid' (it is 'refunded')."""
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,kind,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,paid,refund,TX-1\n"
+    )
+    with pytest.raises(CsvValidationError) as exc:
+        validate_payments(io.StringIO(csv))
+    assert exc.value.code == "invalid_payment_kind_status"
+
+
+def test_validate_payments_rejects_chargeback_paid_pair():
+    """A chargeback can never be marked 'paid' (it is 'charged_back')."""
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,kind,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,paid,chargeback,TX-1\n"
+    )
+    with pytest.raises(CsvValidationError) as exc:
+        validate_payments(io.StringIO(csv))
+    assert exc.value.code == "invalid_payment_kind_status"
+
+
+def test_validate_payments_rejects_payment_refunded_pair():
+    """A normal payment can never be marked 'refunded' (it is 'paid')."""
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,refunded,TX-1\n"
+    )
+    with pytest.raises(CsvValidationError) as exc:
+        validate_payments(io.StringIO(csv))
+    assert exc.value.code == "invalid_payment_kind_status"
+
+
+def test_validate_payments_accepts_non_settled_payment_statuses():
+    """payment+pending / payment+failed are valid on import (non-settled) but
+    do not enter PAYMENT MATCHING (status != paid)."""
+    csv = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,100,pix,pending,TX-1\n"
+        "PAY-2,ORD-2,2026-06-01T12:00:00+00:00,100,pix,failed,TX-2\n"
+    )
+    df = validate_payments(io.StringIO(csv))
+    assert len(df) == 2
+    assert set(df["kind"]) == {"payment"}
+
+
+def test_approved_payments_excludes_non_payment_kinds():
+    """Defense-in-depth: even if an invalid kind/status row escapes CSV
+    validation, _approved_payments must never feed it into PAYMENT MATCHING."""
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 100.0, "paid", "payment"),
+            _payment_row("PAY-R", "ORD-1", 50.0, "paid", "refund"),  # invalid pair
+            _payment_row("PAY-C", "ORD-1", 30.0, "paid", "chargeback"),  # invalid pair
+            _payment_row("PAY-P", "ORD-2", 40.0, "pending", "payment"),  # non-settled
+        ]
+    )
+    approved = _approved_payments(payments)
+    assert len(approved) == 1
+    assert approved.iloc[0]["payment_id"] == "PAY-1"
+    assert (approved["kind"] == "payment").all()
+
+
+def test_two_dimensions_agree_on_invalid_refund_paid_row():
+    """A refund+paid row (which CSV validation rejects) must be ignored by BOTH
+    PAYMENT MATCHING and CASH REALIZATION, so the dimensions cannot disagree."""
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            _payment_row("PAY-1", "ORD-1", 100.0, "paid", "payment"),
+            _payment_row("PAY-R", "ORD-1", 100.0, "paid", "refund"),  # ignored by both
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    # Matching sees only the legitimate payment -> reconciled, no anomaly.
+    assert kpi["eligible_amount"] == money("100.00")
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["missing_payment_amount"] == ZERO
+    # Cash: refund+paid is not a settled refund, so it does not reduce net_cash.
+    assert kpi["gross_paid_amount"] == money("100.00")
+    assert kpi["refunded_amount"] == ZERO
+    assert kpi["net_cash_amount"] == money("100.00")

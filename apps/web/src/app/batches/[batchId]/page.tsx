@@ -162,12 +162,12 @@ export default function BatchDashboardPage() {
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <MoneyKpi label="Recebido bruto" amount={dash.gross_paid_amount} tone="default" />
         <MoneyKpi label="Reembolsado" amount={dash.refunded_amount} tone="warn" />
-        <MoneyKpi label="Chargeback (exposição)" amount={dash.active_chargeback_amount} tone="warn" />
+        <MoneyKpi label="Chargeback (exposição em disputa)" amount={dash.active_chargeback_amount} tone="warn" />
         <MoneyKpi label="Caixa líquido" amount={dash.net_cash_amount} tone="good" />
       </div>
       <p className="mt-3 text-xs text-ink-500">
         <span className="font-medium text-ink-700">Realização de caixa:</span> caixa líquido =
-        recebido bruto − reembolsado − chargeback. Chargeback é exposição atual (disputa), não
+        recebido bruto − reembolsado − chargeback. Chargeback é exposição em disputa, não
         necessariamente perda definitiva.
       </p>
 

@@ -76,9 +76,25 @@ def _norm_channel(value: str) -> str:
 
 
 def _approved_payments(payments: pd.DataFrame) -> pd.DataFrame:
+    """Return rows that enter PAYMENT MATCHING (order coverage).
+
+    Defense-in-depth: a row qualifies only when `kind == "payment" AND
+    status == "paid"`. Legacy CSVs without a `kind` column default to
+    "payment" (retrocompatible). Rows of kind refund/chargeback — even if an
+    invalid `status == "paid"` somehow escaped CSV validation — are explicitly
+    excluded so the two KPI dimensions can never disagree on the same row.
+    """
     if payments.empty:
         return payments
-    return payments[payments["status"].astype(str).str.lower().isin(APPROVED_PAYMENT_STATUSES)].copy()
+    df = payments.copy()
+    if "kind" not in df.columns:
+        df["kind"] = "payment"
+    df["kind"] = (
+        df["kind"].astype(str).str.lower().str.strip().replace({"": "payment", "nan": "payment"})
+    )
+    df["status_norm"] = df["status"].astype(str).str.lower().str.strip()
+    mask = (df["kind"] == "payment") & (df["status_norm"].isin(APPROVED_PAYMENT_STATUSES))
+    return df[mask].copy()
 
 
 def _netting_payments(payments: pd.DataFrame) -> pd.DataFrame:
@@ -435,9 +451,10 @@ def rule_refund_anomalies(orders: pd.DataFrame, payments: pd.DataFrame) -> list[
       it never collected.
     - over_refund (FINANCIAL): total refunded/charged back exceeds total paid for
       the order (amount_impact = refund_sum - paid_gross).
-    - chargeback (OPERACIONAL — "valor associado"): a settled chargeback exists
-      for an order that also has a settled payment. It nets the KPIs but is
-      labeled as an operational/risk fact, not a financial divergence.
+    - chargeback (EXPOSIÇÃO FINANCEIRA EM DISPUTA — "valor associado"): a settled
+      chargeback exists for an order that also has a settled payment. It nets the
+      KPIs (reduces net_cash) but is labeled as disputed exposure, not a
+      financial divergence of the original order.
     """
     issues: list[IssueDraft] = []
     if orders.empty or payments.empty:
@@ -520,8 +537,8 @@ def rule_refund_anomalies(orders: pd.DataFrame, payments: pd.DataFrame) -> list[
                     title=f"Chargeback no pedido {oid}",
                     description=(
                         f"Pedido com valor líquido R$ {money(net):.2f} teve chargeback liquidado de "
-                        f"R$ {money(info['chargeback']):.2f} (reduz o realizado, mas é tratado como "
-                        "fato operacional)."
+                        f"R$ {money(info['chargeback']):.2f} (reduz o realizado e representa exposição "
+                        "financeira em disputa)."
                     ),
                     recommended_action="Acionar disputa de chargeback junto à operadora.",
                     amount_impact=money(info["chargeback"]),
