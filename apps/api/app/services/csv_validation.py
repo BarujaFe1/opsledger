@@ -41,6 +41,20 @@ STOCK_REQUIRED = [
 # the cash-flow sign is derived from `kind` in the reconciliation engine.
 PAYMENT_KINDS = {"payment", "refund", "chargeback"}
 
+# Data contract: which (kind, status) pairs make business sense.
+#   payment   -> paid | pending | failed   (settled / non-settled payment states)
+#   refund    -> refunded                   (a refund is "refunded", never "paid")
+#   chargeback-> charged_back               (a dispute is "charged_back", never "paid")
+# Non-settled rows (pending/failed) are permitted in the CSV but never enter
+# PAYMENT MATCHING or CASH REALIZATION (status != settled), so the engine simply
+# ignores them instead of rejecting at import. Any other pair (e.g. a refund
+# marked "paid", or a payment marked "refunded") is a contradiction and rejected.
+ALLOWED_PAYMENT_STATUSES_BY_KIND = {
+    "payment": {"paid", "pending", "failed"},
+    "refund": {"refunded"},
+    "chargeback": {"charged_back"},
+}
+
 
 class CsvValidationError(Exception):
     def __init__(self, message: str, code: str = "csv_validation_error"):
@@ -130,6 +144,25 @@ def validate_payments(path_or_buffer: Any) -> pd.DataFrame:
     df["method"] = df["method"].astype(str).str.lower().str.strip()
     df["order_id"] = df["order_id"].astype(str).str.strip()
     df["payment_id"] = df["payment_id"].astype(str).str.strip()
+    # Semantic (kind, status) contract: reject pairs that make no business sense
+    # (e.g. a refund marked "paid", or a payment marked "refunded"). Left to its
+    # own devices this would let the same row disagree between the two KPI
+    # dimensions (PAYMENT MATCHING vs CASH REALIZATION).
+    bad_pairs = sorted(
+        {
+            (kind, status)
+            for kind, status in zip(df["kind"], df["status"])
+            if status not in ALLOWED_PAYMENT_STATUSES_BY_KIND.get(kind, set())
+        }
+    )
+    if bad_pairs:
+        formatted = ", ".join(f"{kind}={status}" for kind, status in bad_pairs)
+        raise CsvValidationError(
+            f"Combinação (kind, status) inválida: {formatted}. "
+            f"Pares válidos: payment→paid/pending/failed; refund→refunded; "
+            f"chargeback→charged_back.",
+            code="invalid_payment_kind_status",
+        )
     return df
 
 

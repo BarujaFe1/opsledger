@@ -40,7 +40,7 @@ test("monthly closing demo: ingest → dashboard → issues → issue → report
   // (rendered later in the DOM) which repeats the same terms.
   await expect(page.getByText(/Recebido bruto/i).first()).toBeVisible();
   await expect(page.getByText(/Reembolsado/i).first()).toBeVisible();
-  await expect(page.getByText(/Chargeback \(exposição\)/i).first()).toBeVisible();
+  await expect(page.getByText(/Chargeback \(exposição em disputa\)/i).first()).toBeVisible();
   await expect(page.getByText(/Caixa líquido/i).first()).toBeVisible();
 
   // Issues register
