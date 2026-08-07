@@ -25,7 +25,7 @@ from app.reconciliation.engine import (
     rule_orphan_payment,
     run_reconciliation,
 )
-from app.services.import_service import _persist_frames
+from app.services.import_service import _persist_frames, issue_impact_term
 
 
 def _dt(s: str) -> datetime:
@@ -431,6 +431,17 @@ def test_report_orders_by_business_severity(client):
     content = report.json()["content"]
     assert "Relatório de Fechamento" in content
     assert "Issues por severidade" in content
+
+
+def test_issue_impact_term_distinguishes_financial_from_operational():
+    assert issue_impact_term("missing_payment") == "impacto"
+    assert issue_impact_term("orphan_payment") == "impacto"
+    assert issue_impact_term("amount_mismatch") == "impacto"
+    assert issue_impact_term("duplicate_line") == "impacto"
+    assert issue_impact_term("header_conflict") == "impacto"
+    assert issue_impact_term("missing_stock_out") == "valor associado"
+    assert issue_impact_term("negative_stock") == "valor associado"
+    assert issue_impact_term("channel_standardization") == "valor associado"
 
 
 def test_missing_batch_returns_404(client):

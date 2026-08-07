@@ -92,7 +92,7 @@ export default function IssuesPage() {
       },
       {
         accessorKey: "amount_impact",
-        header: "Impacto",
+        header: "Valor (R$)",
         cell: ({ row }) => formatBRL(row.original.amount_impact),
       },
       {

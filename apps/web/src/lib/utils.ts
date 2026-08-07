@@ -56,6 +56,24 @@ export function issueTypeLabel(type: string): string {
   return map[type] || type;
 }
 
+/** Issue types whose amount_impact is a FINANCIAL divergence (enters "Valor em divergência"). */
+export const FINANCIAL_ISSUE_TYPES = new Set<string>([
+  "missing_payment",
+  "orphan_payment",
+  "amount_mismatch",
+  "duplicate_line",
+  "header_conflict",
+]);
+
+export function isFinancialIssueType(type: string): boolean {
+  return FINANCIAL_ISSUE_TYPES.has(type);
+}
+
+/** Label for an issue's amount: "Impacto financeiro" (financial) vs "Valor associado" (operational). */
+export function issueImpactLabel(type: string): string {
+  return isFinancialIssueType(type) ? "Impacto financeiro" : "Valor associado";
+}
+
 export function statusLabel(status: string): string {
   const map: Record<string, string> = {
     open: "Aberta",
