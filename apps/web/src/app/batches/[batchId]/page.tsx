@@ -6,13 +6,13 @@ import { useParams } from "next/navigation";
 import { ChannelImpactChart, IssuesByTypeChart } from "@/components/Charts";
 import { KpiCard, MoneyKpi } from "@/components/KpiCard";
 import { exportIssuesUrl, getDashboard, getReport } from "@/lib/api";
-import { parsePositiveInt, rememberBatchId } from "@/lib/routing";
+import { parseBatchId, rememberBatchId } from "@/lib/routing";
 import { severityLabel } from "@/lib/utils";
 import type { Dashboard, Report } from "@/types";
 
 export default function BatchDashboardPage() {
   const params = useParams();
-  const batchId = parsePositiveInt(params.batchId);
+  const batchId = parseBatchId(params.batchId as string);
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);

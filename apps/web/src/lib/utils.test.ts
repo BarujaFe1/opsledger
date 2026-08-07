@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatBRL, issueTypeLabel, severityClass, statusLabel } from "./utils";
-import { parsePositiveInt } from "./routing";
+import { parseBatchId, parsePositiveInt } from "./routing";
 
 describe("formatBRL", () => {
   it("formats BRL currency", () => {
@@ -37,5 +37,24 @@ describe("parsePositiveInt", () => {
     expect(parsePositiveInt("0")).toBeNull();
     expect(parsePositiveInt("-1")).toBeNull();
     expect(parsePositiveInt(undefined)).toBeNull();
+  });
+});
+
+describe("parseBatchId", () => {
+  it("accepts positive integers (real batches)", () => {
+    expect(parseBatchId("1")).toBe(1);
+    expect(parseBatchId("150")).toBe(150);
+  });
+
+  it("accepts the demo sentinel -1 (public demo contract)", () => {
+    expect(parseBatchId("-1")).toBe(-1);
+  });
+
+  it("rejects zero, below-sentinel negatives, non-integers and junk", () => {
+    expect(parseBatchId("0")).toBeNull();
+    expect(parseBatchId("-2")).toBeNull();
+    expect(parseBatchId("abc")).toBeNull();
+    expect(parseBatchId("1.5")).toBeNull();
+    expect(parseBatchId("")).toBeNull();
   });
 });

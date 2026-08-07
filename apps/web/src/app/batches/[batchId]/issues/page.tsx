@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-table";
 import { SeverityBadge, StatusBadge } from "@/components/Badge";
 import { getIssues } from "@/lib/api";
-import { parsePositiveInt, rememberBatchId } from "@/lib/routing";
+import { parseBatchId, rememberBatchId } from "@/lib/routing";
 import { formatBRL, issueTypeLabel, SEVERITY_OPTIONS, STATUS_OPTIONS } from "@/lib/utils";
 import type { Issue } from "@/types";
 
@@ -30,7 +30,7 @@ const ISSUE_TYPE_OPTIONS = [
 
 export default function IssuesPage() {
   const params = useParams();
-  const batchId = parsePositiveInt(params.batchId);
+  const batchId = parseBatchId(params.batchId as string);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
