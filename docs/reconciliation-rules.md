@@ -35,15 +35,18 @@ Todas as regras vivem em `apps/api/app/reconciliation/engine.py` e são cobertas
 **Exemplo:** pedido R$ 100, pagamento R$ 75  
 **Ação:** revisar desconto, frete, taxa ou reembolso.
 
-## 4. `duplicate_order`
+## 4. `duplicate_order` → `header_conflict` / `duplicate_line`
 
-**Motivação:** exportações duplicadas inflacionam GMV e estoque.
+**Motivação:** exportações duplicadas inflacionam GMV e estoque; porém um pedido legítimo pode ter múltiplos SKUs (multiline) e NÃO é duplicata.
 
-**Lógica:** mesmo `order_id` mais de uma vez; high se SKUs/valores inconsistentes, medium se cópia idêntica.
+**Lógica (`rule_duplicate_order`):** mesmo `order_id` aparece em mais de uma linha. Três saídas:
+- **multiline legítimo** — header consistente (cliente/canal/status/data) + SKUs distintos → válido, **sem issue**.
+- **`duplicate_line`** — linha idêntica repetida (mesmo SKU/quantidade/valor) → **high**.
+- **`header_conflict`** — atributos de cabeçalho conflitantes entre linhas do mesmo `order_id` → **high**.
 
-**Severidade:** medium ou high  
-**Exemplo:** `ORD-0012` com dois SKUs diferentes  
-**Ação:** verificar duplicidade de exportação.
+**Severidade:** high (para `duplicate_line`/`header_conflict`); multiline legítimo não gera issue  
+**Exemplo:** `ORD-0012` com dois SKUs diferentes = multiline legítimo (sem issue); `ORD-X` com duas linhas idênticas = `duplicate_line`  
+**Ação:** verificar duplicidade de exportação / integridade do cabeçalho.
 
 ## 5. `missing_stock_out`
 

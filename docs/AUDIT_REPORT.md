@@ -127,11 +127,13 @@ Após o merge da Fase 1 (PR #1, `a40d867`), a Fase 2a atacou os riscos estrutura
 | Double-counting financeiro no impacto por canal | Alto | impacto restrito a `MONEY_ISSUE_TYPES` + dedup `(issue_type, entity_id)` |
 | KPIs sem decomposição (só elegível/divergência) | Médio | `compute_kpis`: missing/under/over/orphan/pending-excluded com invariante |
 
-### Invariante central (novo)
-`eligible_amount = reconciled_amount + missing_payment_amount + underpayment_amount + overpayment_amount`
+### Invariante central (novo, refinado em 2a.1)
+`eligible_amount = reconciled_amount + missing_payment_amount + underpayment_amount`
 
-Validado no dataset dourado: `22478.5 = 21152.9 + 1179.1 + 146.5 + 0`.  
-Impacto por canal sem inflação: `sum(impact) = 1325.6 == unreconciled_amount 1325.6`.
+(`overpayment_amount` e `orphan_payment_amount` são exposures payments-side, reportadas à parte — nunca subtraídas de `eligible`).
+
+Validado no dataset dourado: `22478.5 = 21152.9 + 1179.1 + 146.5`.  
+Impacto por canal sem inflação: `sum(impact) = 1325.6 == unreconciled_amount 1325.6` (overpayment excluído do impacto por canal).
 
 ### O que permanece fora de escopo (Fase 2b)
 - Múltiplos pagamentos por pedido (split / parcial / excesso / refund) com modelo dedicado.
@@ -142,4 +144,25 @@ Impacto por canal sem inflação: `sum(impact) = 1325.6 == unreconciled_amount 1
 CI deve rodar no SHA novo (não reusar verde do SHA anterior). Backend 47 passed; front
 `tsc`/`lint`/`vitest`/`build` verdes. Merge via **merge commit** (não squash), por
 convenção de histórico documentário do projeto.
+
+---
+
+## 11. Addendum — Fase 2a.1 (2026-08) — grain invariants
+
+Revisão pós-merge da Fase 2a (PR #2, `ab8ce71`) identificou **4 defeitos reais de modelagem + 1 bug sutil de fórmula de overpayment**. Corrigidos em `feat/fase2a1-grain-invariants` (PR #3).
+
+### Defeitos fechados
+| # | Defeito (pré-2a.1) | Severidade | Resolução |
+|---|---------------------|------------|-----------|
+| 1 | 1 `Order` persistido por linha CSV (N headers → N linhas) | Alto | 1 `Order` por `(batch_id, order_id)` + N `OrderLine` |
+| 2 | `uq_order_line(order_id, line_id)` quebra re-import em outro batch | Médio | constraints incluem `batch_id` (`uq_order_header`, `uq_order_line`) |
+| 3 | `rule_duplicate_order` marcava qq multiline como duplicata (alta) | Alto | split 3 saídas: multiline legítimo / `duplicate_line` / `header_conflict` |
+| 4 | `missing_stock_out` fazia `sku=("sku","first")`, perdendo SKUs | Médio | grain `(order_id, sku)`: 1 issue por SKU sem `out` |
+| 5 | overpayment subtraído de `eligible` (semântica errada) | Médio | `overpayment`/`orphan_payment` são payments-side; `eligible = reconciled + missing + under` |
+
+### Por que o verde da Fase 2a não pegou
+O dataset dourado tem `over=0`; o invariante antigo `eligible = reconciled + missing + under + over` era trivialmente satisfeito, mascarando o bug de semântica. Os 6 testes obrigatórios de 2a.1 cobrem os grains e o caso `over≠0` explicitamente.
+
+### Verificação
+Backend 52 passed; front `tsc`/`lint`/`vitest` verdes; `next build` delegado à CI (ENOSPC local). Merge via merge commit.
 

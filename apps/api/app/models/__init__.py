@@ -41,12 +41,14 @@ class ImportBatch(Base):
 
 
 class Order(Base):
-    """Order header — one row per order_id (may repeat by design for duplicates).
+    """Order header — one row per (batch_id, order_id).
 
     Money lives on OrderLine (item grain). The header carries only order-level
-    identity/dimension columns. OrderLine.order_id is a logical link (indexed
-    String), not a DB FK, because order_id is intentionally non-unique
-    (rule_duplicate_order emits for repeated order_ids).
+    identity/dimension columns. `order_id` is intentionally non-unique across
+    batches (the same order re-imported lands in a new batch); within a batch it
+    is unique (see uq_order_header). OrderLine.order_id is a logical link
+    (indexed String), not a DB FK, because genuine duplicate lines are detected
+    by rule_duplicate_order, not prevented at insert time.
     """
 
     __tablename__ = "orders"
@@ -62,9 +64,16 @@ class Order(Base):
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="orders")
 
+    __table_args__ = (UniqueConstraint("batch_id", "order_id", name="uq_order_header"),)
+
 
 class OrderLine(Base):
-    """Item-grain line of an Order. Multiple lines may share one order_id."""
+    """Item-grain line of an Order. Multiple lines may share one order_id.
+
+    `line_id` is generated per (batch_id, order_id) as "{order_id}-L{seq}", so the
+    same order re-imported in a different batch must not collide — hence the
+    unique constraint spans batch_id as well.
+    """
 
     __tablename__ = "order_lines"
 
@@ -80,7 +89,9 @@ class OrderLine(Base):
     discount_amount: Mapped[Decimal] = mapped_column(MoneyCol, default=Decimal("0.00"))
     net_amount: Mapped[Decimal] = mapped_column(MoneyCol)
 
-    __table_args__ = (UniqueConstraint("order_id", "line_id", name="uq_order_line"),)
+    __table_args__ = (
+        UniqueConstraint("batch_id", "order_id", "line_id", name="uq_order_line"),
+    )
 
 
 class Payment(Base):
