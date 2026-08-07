@@ -454,6 +454,22 @@ def update_issue_status(
     return issue
 
 
+# Issue types whose amount_impact is a FINANCIAL divergence (enters "Valor em divergência").
+# Stock / data-quality issues carry an *associated* operational value, not a financial divergence.
+FINANCIAL_ISSUE_TYPES = {
+    "missing_payment",
+    "orphan_payment",
+    "amount_mismatch",
+    "duplicate_line",
+    "header_conflict",
+}
+
+
+def issue_impact_term(issue_type: str) -> str:
+    """Label for an issue's amount: 'impacto' (financial) vs 'valor associado' (operational)."""
+    return "impacto" if issue_type in FINANCIAL_ISSUE_TYPES else "valor associado"
+
+
 def _report_from_data(batch: ImportBatch, issues: list, orders_df: pd.DataFrame, payments_df: pd.DataFrame) -> str:
     """Build the closing-report markdown from already-loaded issues/order frames."""
     dash = _dashboard_from_data(batch, issues, orders_df, payments_df)
@@ -498,8 +514,9 @@ def _report_from_data(batch: ImportBatch, issues: list, orders_df: pd.DataFrame,
     lines.extend(["", "## Próxima melhor ação", "", dash.get("next_best_action") or "—", "", "## Top issues", ""])
     for issue in issues_sorted[:15]:
         impact = money(issue.amount_impact or 0)
+        term = issue_impact_term(getattr(issue, "issue_type", "") or "")
         lines.append(
-            f"- **[{issue.severity}] {issue.title}** — impacto R$ {impact:.2f} — status `{issue.status}`"
+            f"- **[{issue.severity}] {issue.title}** — {term} R$ {impact:.2f} — status `{issue.status}`"
         )
         lines.append(f"  - {issue.recommended_action}")
     if not issues:

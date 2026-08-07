@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBRL, issueTypeLabel, severityClass, statusLabel } from "./utils";
+import { formatBRL, issueImpactLabel, issueTypeLabel, severityClass, statusLabel } from "./utils";
 import { parseBatchId, parsePositiveInt } from "./routing";
 
 describe("formatBRL", () => {
@@ -56,5 +56,21 @@ describe("parseBatchId", () => {
     expect(parseBatchId("abc")).toBeNull();
     expect(parseBatchId("1.5")).toBeNull();
     expect(parseBatchId("")).toBeNull();
+  });
+});
+
+describe("issueImpactLabel", () => {
+  it("labels monetary issues as 'Impacto financeiro'", () => {
+    expect(issueImpactLabel("missing_payment")).toBe("Impacto financeiro");
+    expect(issueImpactLabel("orphan_payment")).toBe("Impacto financeiro");
+    expect(issueImpactLabel("amount_mismatch")).toBe("Impacto financeiro");
+    expect(issueImpactLabel("duplicate_line")).toBe("Impacto financeiro");
+    expect(issueImpactLabel("header_conflict")).toBe("Impacto financeiro");
+  });
+
+  it("labels stock / data-quality issues as 'Valor associado'", () => {
+    expect(issueImpactLabel("missing_stock_out")).toBe("Valor associado");
+    expect(issueImpactLabel("negative_stock")).toBe("Valor associado");
+    expect(issueImpactLabel("channel_standardization")).toBe("Valor associado");
   });
 });
