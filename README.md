@@ -27,7 +27,7 @@
   </p>
 
   <p>
-    <a href="https://opsledger-app.vercel.app"><strong>Live Demo</strong></a> ·
+    <a href="https://opsledger-one.vercel.app"><strong>Live Demo</strong></a> ·
     <a href="https://github.com/BarujaFe1/opsledger"><strong>Repo</strong></a> ·
     <a href="https://barujafe.vercel.app/"><strong>Portfolio</strong></a> ·
     <a href="https://www.linkedin.com/in/barujafe/"><strong>LinkedIn</strong></a>
@@ -104,7 +104,7 @@ Ops analysts, small/mid e-commerce founders, and data professionals who need app
 
 | Surface | URL |
 |---|---|
-| **Public lab** | [https://opsledger-app.vercel.app](https://opsledger-app.vercel.app) |
+| **Public lab** | [https://opsledger-one.vercel.app](https://opsledger-one.vercel.app) |
 | **GitHub** | [https://github.com/BarujaFe1/opsledger](https://github.com/BarujaFe1/opsledger) |
 
 **How to try:** open the demo → **Rodar demo** → inspect KPIs → open a high-severity issue → (local mode only) change status → export / closing report. In the public demo, upload and status changes are disabled by design.
@@ -204,7 +204,7 @@ CSV export / Markdown-HTML report
 
 **Prerequisites:** Node.js 20+, Python 3.12+, Git.
 
-> One-click public demo: **[https://opsledger-app.vercel.app](https://opsledger-app.vercel.app)** → **Rodar demo**.
+> One-click public demo: **[https://opsledger-one.vercel.app](https://opsledger-one.vercel.app)** → **Rodar demo**.
 
 ### Windows one-shot
 ```bash

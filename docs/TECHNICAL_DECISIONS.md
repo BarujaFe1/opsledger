@@ -14,7 +14,7 @@
 
 ### ADR-003 — Same-origin `/api` no Vercel
 **Decisão:** prefixar FastAPI com `/api` e rewrite no `vercel.json`.  
-**Por quê:** CORS simples, URL única para portfólio (`opsledger-app.vercel.app`).  
+**Por quê:** CORS simples, URL única para portfólio (`opsledger-one.vercel.app`).  
 **Trade-off:** local ainda usa `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`.
 
 ### ADR-004 — KPIs financeiros a partir de issues abertas

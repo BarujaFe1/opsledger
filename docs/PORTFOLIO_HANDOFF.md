@@ -2,7 +2,7 @@
 
 **Branch:** `chore/portfolio-quality-pass`  
 **Autor:** Felipe Alírio Baruja  
-**Demo canônica:** https://opsledger-app.vercel.app  
+**Demo canônica:** https://opsledger-one.vercel.app  
 **Repo:** https://github.com/BarujaFe1/opsledger
 
 ---

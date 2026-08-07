@@ -82,7 +82,7 @@ npm run build                      → OK
 ## Sugestões de portfólio
 
 - Lead com Marina → demo → `engine.py` + pytest.
-- Link canônico: https://opsledger-app.vercel.app
+- Link canônico: https://opsledger-one.vercel.app
 - Posicionar como Ops/Analytics Engineering, não fintech.
 
 ---

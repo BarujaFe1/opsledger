@@ -2,9 +2,9 @@
 
 ## Live Demo
 
-**https://opsledger-app.vercel.app** → **Rodar demo**
+**https://opsledger-one.vercel.app** → **Rodar demo**
 
-> Nota: `opsledger.vercel.app` estava indisponível na conta; o alias canônico é `opsledger-app.vercel.app`.
+> Nota: `opsledger.vercel.app` estava indisponível na conta; o alias canônico é `opsledger-one.vercel.app`.
 
 ## Local
 
