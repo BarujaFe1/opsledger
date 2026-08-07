@@ -36,6 +36,18 @@ from app.services.csv_validation import (
 )
 
 
+def _count_orders(orders_df: pd.DataFrame) -> int:
+    """Count distinct order headers, not order-line rows.
+
+    After Fase 2a.1, orders_df is at the order-line grain (one row per SKU), so
+    ``len(orders_df)`` overcounts. The header count is the number of unique
+    ``order_id`` values.
+    """
+    if orders_df is None or orders_df.empty:
+        return 0
+    return int(orders_df["order_id"].astype(str).nunique())
+
+
 def _persist_frames(
     db: Session,
     batch: ImportBatch,
@@ -156,7 +168,7 @@ def process_import(
                 )
             )
 
-        batch.total_orders = int(len(orders_df))
+        batch.total_orders = _count_orders(orders_df)
         batch.total_payments = int(len(payments_df))
         batch.total_stock_movements = int(len(stock_df))
         batch.total_issues = len(drafts)
@@ -179,7 +191,7 @@ def process_import(
         failed = ImportBatch(
             source_name=source_name,
             status="failed",
-            total_orders=int(len(orders_df)),
+            total_orders=_count_orders(orders_df),
             total_payments=int(len(payments_df)),
             total_stock_movements=int(len(stock_df)),
         )
@@ -601,7 +613,7 @@ def _build_demo_payload() -> dict:
         source_name="demo:monthly_closing_2026_06",
         status="completed",
         created_at=DEMO_CLOSED_AT,
-        total_orders=int(len(orders_df)),
+        total_orders=_count_orders(orders_df),
         total_payments=int(len(payments_df)),
         total_stock_movements=int(len(stock_df)),
         total_issues=len(drafts),

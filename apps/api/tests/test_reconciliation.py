@@ -514,6 +514,42 @@ def test_multiline_order_persists_one_header_two_lines(dbsession):
     assert {l.sku for l in lines} == {"SKU-A", "SKU-B"}
 
 
+def test_multiline_order_total_orders_grain(client):
+    """Fase 2a.1 residual fix: total_orders counts headers, not order-line rows.
+
+    ORD-1 has 2 SKU lines (one header). The persisted Order table has 1 header /
+    2 lines; batch.total_orders and dashboard.total_orders must both be 1, not 2.
+    """
+    orders = (
+        "order_id,order_date,customer_name,customer_document_optional,channel,sku,product_name,"
+        "quantity,unit_price,gross_amount,discount_amount,net_amount,status\n"
+        "ORD-1,2026-06-01T10:00:00+00:00,Ana Silva,,Shopify,SKU-A,Item A,1,100,100,0,100,paid\n"
+        "ORD-1,2026-06-01T10:05:00+00:00,Ana Silva,,Shopify,SKU-B,Item B,1,50,50,0,50,paid\n"
+    )
+    payments = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,150,pix,paid,TX-1\n"
+    )
+    stock = (
+        "movement_id,sku,movement_type,quantity,movement_date,reference_order_id,notes\n"
+        "M1,SKU-A,out,1,2026-06-01T12:00:00+00:00,ORD-1,\n"
+        "M2,SKU-B,out,1,2026-06-01T12:05:00+00:00,ORD-1,\n"
+    )
+    files = {
+        "orders": ("orders.csv", orders, "text/csv"),
+        "payments": ("payments.csv", payments, "text/csv"),
+        "stock_movements": ("stock.csv", stock, "text/csv"),
+    }
+    uploaded = client.post("/api/imports", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    # 2 SKU lines, 1 header -> total_orders must be 1 (header grain), not 2.
+    assert body["batch"]["total_orders"] == 1
+    batch_id = body["batch"]["id"]
+    dash = client.get(f"/api/imports/{batch_id}/dashboard").json()
+    assert dash["total_orders"] == 1
+
+
 def test_same_order_id_across_batches_persists_both(dbsession):
     """Same order_id re-imported in a different batch must not hit the unique constraint."""
     orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0}])

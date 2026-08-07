@@ -38,11 +38,14 @@
 - `compute_kpis`: invariante corrigido para `eligible = reconciled + missing + under`; `overpayment`/`orphan_payment` são exposures payments-side (fora do `eligible`).
 - Dashboard (impacto por canal): exclui overpayment — `amount_mismatch` conta só a parcela **under**.
 - Front (`lib/utils.ts`): labels `duplicate_line: "Linha duplicada"`, `header_conflict: "Conflito de cabeçalho"`.
+- `total_orders` agora no grain de header: `int(orders_df["order_id"].nunique())` nos 3 caminhos (batch concluído, batch `failed`, demo stateless). Antes `int(len(orders_df))` sobrecontava (contava linhas de pedido, não cabeçalhos).
+- `compute_amounts` removido: função legada com definição contraditória de `reconciled` (ainda subtraía overpayment do conciliado) e sem call site relevante. `compute_kpis` é a única fonte financeira.
 
 ### Verified
 - Backend pytest: **52 passed** (47 da Fase 2a + 5 líquidos de 2a.1).
 - `eligible == reconciled + missing + under` no dataset dourado (22478.5 = 21152.9 + 1179.1 + 146.5); over=0.
 - `test_overpayment_is_payment_side_exposure`: pedido 100 / pago 110 → `reconciled=100`, `overpayment_amount=10` (invariante sem over).
+- `test_multiline_order_total_orders_grain`: upload multiline (2 SKUs) → `batch.total_orders == 1` e `dashboard.total_orders == 1` (não 2). `compute_amounts` removido (sem call site); backend segue **52 passed**.
 - Frontend: `tsc`/`lint`/`vitest`(6) verdes; `next build` delegado à CI (ENOSPC local).
 
 ## Added

@@ -388,38 +388,6 @@ def run_reconciliation(
     return drafts
 
 
-def compute_amounts(
-    orders: pd.DataFrame,
-    payments: pd.DataFrame,
-    issues: Iterable[IssueDraft],
-) -> tuple[Decimal, Decimal, Decimal]:
-    """Return (total, reconciled, unreconciled) as quantized Decimals.
-
-    `payments` is accepted for signature stability; amounts come from orders + money issues.
-    """
-    del payments  # unused — kept for call-site compatibility
-    if orders.empty:
-        total_amount = ZERO
-    else:
-        total_amount = money_sum([money(v) for v in orders["net_amount"].tolist()])
-
-    unreconciled = ZERO
-    seen: set[tuple[str, str]] = set()
-    for issue in issues:
-        if issue.issue_type not in MONEY_ISSUE_TYPES:
-            continue
-        key = (issue.issue_type, issue.entity_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        unreconciled += money(issue.amount_impact)
-    unreconciled = money(unreconciled)
-    if total_amount > ZERO:
-        unreconciled = min(unreconciled, total_amount)
-    reconciled = money(max(total_amount - unreconciled, ZERO))
-    return total_amount, reconciled, unreconciled
-
-
 def _mismatch_under_over(
     orders: pd.DataFrame,
     payments: pd.DataFrame,
