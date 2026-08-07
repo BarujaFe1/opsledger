@@ -90,3 +90,7 @@ jobs:
         run: npm run test:e2e
         env:
           CI: "true"
+          # Run the API in public-demo mode so the E2E exercises the real production
+          # contract (demo returns sentinel batch id -1). Inherited by the uvicorn
+          # webServer Playwright spawns; the spec asserts /batches/-1 when this is set.
+          PUBLIC_DEMO_MODE: "1"
