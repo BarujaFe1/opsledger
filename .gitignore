@@ -31,6 +31,7 @@ Thumbs.db
 data/processed/*
 !data/processed/.gitkeep
 apps/api/opsledger.db
+_smoke/
 
 # Env / secrets
 .env.local
