@@ -32,6 +32,16 @@
 **Por quê:** demo de portfólio sem fricção.  
 **Trade-off:** superfície aberta a abuso; rate-limit/auth são pré-requisito de produto pago.
 
+### ADR-007 — Grain: Order (cabeçalho) + OrderLine (item)
+**Decisão (Fase 2a):** `Order` é cabeçalho (identidade/dimensão: order_id, order_date, customer, channel, status). O dinheiro e o item vivem em `OrderLine` (sku, quantity, unit_price, gross/discount/net) com `order_id` indexado (link lógico, não FK, pois order_id é intencionalmente não-único para detectar duplicatas). A reconciliação financeira agrega por `order_id` (`groupby("order_id").agg(net_amount="sum")`).  
+**Por quê:** `order ≠ order_line`. O modelo anterior colocava sku/quantidade/valor no cabeçalho, o que (1) impossibilitava pedidos multi-item e (2) fazia regras que iteravam linhas emitirem issues duplicadas por pedido.  
+**Trade-off:** a persistência grava N `OrderLine` por pedido; o engine agrega de volta ao grain de pedido antes de emitir issues e KPIs. `OrderLine.order_id` não é FK para preservar a detecção de `duplicate_order`.
+
+### ADR-008 — Decomposição de KPIs financeiros sem double-counting
+**Decisão (Fase 2a):** `compute_kpis(orders, payments, issues)` expõe `eligible / reconciled / unreconciled / missing_payment / underpayment / overpayment / orphan_payment / pending_excluded`. Invariante: `eligible = reconciled + missing + under + over`. Under/over vêm de `amount_mismatch` abertos comparados ao somatório de pagamentos aprovados por pedido. O impacto por canal no dashboard é restrito a `MONEY_ISSUE_TYPES` (`missing_payment`, `orphan_payment`, `amount_mismatch`) e **dedupado por (issue_type, entity_id)**; issues de estoque/duplicata não entram no impacto financeiro por canal. `orphan_payment` é payments-side (dinheiro sem pedido) e é reportado à parte, nunca subtraído de `eligible`.  
+**Por quê:** a implementação anterior somava o `amount_impact` de TODAS as issues abertas por canal (incluindo `missing_stock_out`, `duplicate_order`), inflacionando o impacto financeiro 2–3× acima de `unreconciled_amount`. Recrutador de finanças notaria a inconsistência soma-de-impactos ≠ fechamento.  
+**Trade-off:** o impacto por canal deixa de refletir issues não-financeiras (estoque/duplicata) — por design; elas continuam nos contadores `issues_by_type`.
+
 ## O que deliberadamente NÃO fizemos
 
 - ERP / WMS / emissão fiscal / conciliação bancária completa.

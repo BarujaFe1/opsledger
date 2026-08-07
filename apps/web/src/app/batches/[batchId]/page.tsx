@@ -139,14 +139,23 @@ export default function BatchDashboardPage() {
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard label="Total de pedidos" value={dash.total_orders} />
-        <MoneyKpi label="Valor total de pedidos" amount={dash.total_order_amount} />
+        <MoneyKpi label="Valor elegível (pagos/enviados)" amount={dash.eligible_amount} />
         <MoneyKpi label="Valor conciliado (aberto)" amount={dash.reconciled_amount} tone="good" />
         <MoneyKpi label="Valor em divergência (aberto)" amount={dash.unreconciled_amount} tone="warn" />
         <KpiCard label="Quantidade de issues" value={dash.total_issues} tone={dash.total_issues ? "warn" : "good"} />
         <KpiCard label="Issues críticas" value={critical} tone={critical ? "danger" : "good"} />
       </div>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <MoneyKpi label="Pagamento ausente" amount={dash.missing_payment_amount} tone="danger" />
+        <MoneyKpi label="Subpagamento (under)" amount={dash.underpayment_amount} tone="warn" />
+        <MoneyKpi label="Superpagamento (over)" amount={dash.overpayment_amount} tone="warn" />
+        <MoneyKpi label="Pagamento órfão (sem pedido)" amount={dash.orphan_payment_amount} tone="warn" />
+        <MoneyKpi label="Pendentes excluídos" amount={dash.pending_excluded_amount} tone="default" />
+      </div>
       <p className="mt-3 text-xs text-ink-500">
-        Valores conciliado/divergência refletem issues financeiras ainda abertas ou em revisão (não o snapshot congelado do import).
+        Valores conciliado/divergência refletem issues financeiras ainda abertas ou em revisão (não o
+        snapshot congelado do import). Elegível = conciliado + pagamento ausente + subpagamento + superpagamento.
       </p>
 
       {dash.next_best_action ? (

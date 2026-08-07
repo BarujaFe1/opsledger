@@ -10,10 +10,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.money import money
+from app.core.money import ZERO, money
 from app.db.session import Base, get_db
 from app.main import app
 from app.reconciliation.engine import (
+    compute_kpis,
     rule_amount_mismatch,
     rule_channel_standardization,
     rule_duplicate_order,
@@ -390,3 +391,196 @@ def test_report_orders_by_business_severity(client):
 def test_missing_batch_returns_404(client):
     res = client.get("/api/imports/999999/dashboard")
     assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Fase 2a: order/order_line grain + dedup
+# ---------------------------------------------------------------------------
+
+
+def test_multiline_order_dedups_missing_payment():
+    """Two lines for the same order_id -> one missing_payment issue, net = sum."""
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "quantity": 1, "status": "paid"},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0, "quantity": 2, "status": "paid"},
+        ]
+    )
+    payments = _payments([])
+    issues = rule_missing_payment(orders, payments)
+    assert len(issues) == 1
+    assert issues[0].entity_id == "ORD-1"
+    assert issues[0].amount_impact == money("150.00")
+
+
+def test_multiline_order_dedups_missing_stock_out():
+    """Two lines for one shipped order with no 'out' -> one missing_stock_out."""
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "quantity": 1, "status": "shipped"},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0, "quantity": 3, "status": "shipped"},
+        ]
+    )
+    stock = _stock([])
+    issues = rule_missing_stock_out(orders, stock)
+    assert len(issues) == 1
+    assert issues[0].entity_id == "ORD-1"
+    assert issues[0].amount_impact == money("150.00")
+
+
+# ---------------------------------------------------------------------------
+# Fase 2a: KPI decomposition (no inflation)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_kpis_missing_payment_invariant():
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments([])
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    assert kpi["eligible_amount"] == money("100.00")
+    assert kpi["missing_payment_amount"] == money("100.00")
+    assert kpi["reconciled_amount"] == money("0.00")
+    assert kpi["pending_excluded_amount"] == ZERO
+    assert kpi["eligible_amount"] == (
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"]
+        + kpi["underpayment_amount"] + kpi["overpayment_amount"]
+    )
+
+
+def test_compute_kpis_underpayment_multiline_invariant():
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "status": "paid"},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0, "status": "paid"},
+            {**BASE_ORDER, "order_id": "ORD-2", "sku": "SKU-A", "net_amount": 200.0, "status": "canceled"},
+        ]
+    )
+    payments = _payments(
+        [
+            {
+                "payment_id": "PAY-1",
+                "order_id": "ORD-1",
+                "paid_at": _dt("2026-06-01T11:00:00+00:00"),
+                "amount": 100.0,
+                "method": "pix",
+                "status": "paid",
+            }
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    # Only ORD-1 is eligible (ORD-2 canceled -> pending_excluded).
+    assert kpi["eligible_amount"] == money("150.00")
+    assert kpi["pending_excluded_amount"] == money("200.00")
+    # ORD-1 paid 100 of 150 net -> underpayment 50.
+    assert kpi["underpayment_amount"] == money("50.00")
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["eligible_amount"] == (
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"]
+        + kpi["underpayment_amount"] + kpi["overpayment_amount"]
+    )
+
+
+def test_compute_kpis_orphan_separate_from_eligible():
+    orders = _orders([])
+    payments = _payments(
+        [
+            {
+                "payment_id": "PAY-X",
+                "order_id": "ORD-GHOST",
+                "paid_at": _dt("2026-06-01T11:00:00+00:00"),
+                "amount": 77.0,
+                "method": "pix",
+                "status": "paid",
+            }
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    assert kpi["orphan_payment_amount"] == money("77.00")
+    # orphan is payments-side; eligible stays 0 and invariant holds trivially.
+    assert kpi["eligible_amount"] == ZERO
+    assert kpi["reconciled_amount"] == ZERO
+
+
+# ---------------------------------------------------------------------------
+# Fase 2a: channel double-counting fix (dashboard)
+# ---------------------------------------------------------------------------
+
+
+def test_channel_impact_excludes_non_money_issues(client):
+    """A shipped order with no payment and no stock-out yields missing_payment
+    AND missing_stock_out. Channel impact must reflect only the money issue,
+    so it equals (not exceeds) unreconciled_amount."""
+    orders = (
+        "order_id,order_date,customer_name,customer_document_optional,channel,sku,product_name,"
+        "quantity,unit_price,gross_amount,discount_amount,net_amount,status\n"
+        "ORD-SHIP,2026-06-01T10:00:00+00:00,Cliente X,,Shopify,SKU-A,Item,1,100,100,0,100,shipped\n"
+    )
+    payments = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-ORPH,ORD-NOPE,2026-06-01T11:00:00+00:00,50,pix,paid,TX-ORPH\n"
+    )
+    stock = (
+        "movement_id,sku,movement_type,quantity,movement_date,reference_order_id,notes\n"
+        "M1,SKU-A,in,5,2026-05-31T08:00:00+00:00,,\n"
+    )
+    files = {
+        "orders": ("orders.csv", orders, "text/csv"),
+        "payments": ("payments.csv", payments, "text/csv"),
+        "stock_movements": ("stock.csv", stock, "text/csv"),
+    }
+    uploaded = client.post("/api/imports", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    batch_id = uploaded.json()["batch"]["id"]
+
+    dash = client.get(f"/api/imports/{batch_id}/dashboard").json()
+    chan_sum = sum(c["impact"] for c in dash["top_channels_with_divergence"])
+    # Channel impact == unreconciled (only the money issue counts); no inflation.
+    # The orphan payment (PAY-ORPH -> ORD-NOPE) is excluded from channel impact
+    # because its entity_id is a payment id, not an order id.
+    assert chan_sum == dash["unreconciled_amount"]
+    assert dash["unreconciled_amount"] == 100.0
+    # missing_stock_out exists but must NOT inflate channel impact.
+    issue_types = [i["issue_type"] for i in client.get(f"/api/imports/{batch_id}/issues").json()]
+    assert "missing_stock_out" in issue_types
+    assert "missing_payment" in issue_types
+
+
+def test_dashboard_exposes_kpi_decomposition(client):
+    orders = (
+        "order_id,order_date,customer_name,customer_document_optional,channel,sku,product_name,"
+        "quantity,unit_price,gross_amount,discount_amount,net_amount,status\n"
+        "ORD-A,2026-06-01T10:00:00+00:00,Cliente X,,Shopify,SKU-A,Item,1,100,100,0,100,paid\n"
+    )
+    payments = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-A,ORD-A,2026-06-01T11:00:00+00:00,100,pix,paid,TX-A\n"
+    )
+    stock = (
+        "movement_id,sku,movement_type,quantity,movement_date,reference_order_id,notes\n"
+        "M1,SKU-A,in,5,2026-05-31T08:00:00+00:00,,\n"
+    )
+    files = {
+        "orders": ("orders.csv", orders, "text/csv"),
+        "payments": ("payments.csv", payments, "text/csv"),
+        "stock_movements": ("stock.csv", stock, "text/csv"),
+    }
+    uploaded = client.post("/api/imports", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    batch_id = uploaded.json()["batch"]["id"]
+    dash = client.get(f"/api/imports/{batch_id}/dashboard").json()
+    for field in [
+        "eligible_amount",
+        "missing_payment_amount",
+        "underpayment_amount",
+        "overpayment_amount",
+        "orphan_payment_amount",
+        "pending_excluded_amount",
+    ]:
+        assert field in dash
+    # Fully reconciled order: eligible == reconciled, no divergence.
+    assert dash["eligible_amount"] == 100.0
+    assert dash["reconciled_amount"] == 100.0
+    assert dash["unreconciled_amount"] == 0.0

@@ -94,6 +94,12 @@ class DashboardOut(BaseModel):
     total_order_amount: float
     reconciled_amount: float
     unreconciled_amount: float
+    eligible_amount: float = 0.0
+    missing_payment_amount: float = 0.0
+    underpayment_amount: float = 0.0
+    overpayment_amount: float = 0.0
+    orphan_payment_amount: float = 0.0
+    pending_excluded_amount: float = 0.0
     total_issues: int
     open_issues_count: int = 0
     issues_by_severity: list[SeverityCount]
