@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.money import ZERO, money
 from app.db.session import Base, get_db
 from app.main import app
+from app.models import ImportBatch, Order, OrderLine
 from app.reconciliation.engine import (
     compute_kpis,
     rule_amount_mismatch,
@@ -24,6 +25,7 @@ from app.reconciliation.engine import (
     rule_orphan_payment,
     run_reconciliation,
 )
+from app.services.import_service import _persist_frames
 
 
 def _dt(s: str) -> datetime:
@@ -109,16 +111,44 @@ def test_amount_mismatch():
     assert issues[0].amount_impact == money("30.00")
 
 
-def test_duplicate_order():
+def test_legitimate_multiline_order_no_duplicate():
+    """Same order_id with consistent header + distinct SKUs is a VALID multi-line
+    order, not a duplicate."""
     orders = _orders(
         [
-            {**BASE_ORDER},
-            {**BASE_ORDER, "sku": "SKU-B", "product_name": "Produto B", "net_amount": 80.0},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0},
+        ]
+    )
+    issues = rule_duplicate_order(orders)
+    assert issues == []
+
+
+def test_duplicate_line_detected():
+    """Two identical lines for the same order_id is a genuine duplicate line."""
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0},
         ]
     )
     issues = rule_duplicate_order(orders)
     assert len(issues) == 1
-    assert issues[0].issue_type == "duplicate_order"
+    assert issues[0].issue_type == "duplicate_line"
+    assert issues[0].severity == "high"
+
+
+def test_header_conflict_detected():
+    """Same order_id with conflicting header attributes (channel) is a conflict."""
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "channel": "Shopify", "sku": "SKU-A", "net_amount": 100.0},
+            {**BASE_ORDER, "order_id": "ORD-1", "channel": "Loja Física", "sku": "SKU-B", "net_amount": 50.0},
+        ]
+    )
+    issues = rule_duplicate_order(orders)
+    assert len(issues) == 1
+    assert issues[0].issue_type == "header_conflict"
     assert issues[0].severity == "high"
 
 
@@ -312,6 +342,21 @@ def client(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture()
+def dbsession(tmp_path):
+    db_path = tmp_path / "t.db"
+    eng = create_engine(
+        f"sqlite:///{db_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=eng)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+    with SessionLocal() as s:
+        yield s
+    eng.dispose()
+
+
 def test_health(client):
     res = client.get("/api/health")
     assert res.status_code == 200
@@ -413,19 +458,114 @@ def test_multiline_order_dedups_missing_payment():
     assert issues[0].amount_impact == money("150.00")
 
 
-def test_multiline_order_dedups_missing_stock_out():
-    """Two lines for one shipped order with no 'out' -> one missing_stock_out."""
+def test_multiline_order_missing_stock_out_per_sku():
+    """Multi-SKU shipped order with no 'out' -> one missing_stock_out PER SKU."""
     orders = _orders(
         [
-            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "quantity": 1, "status": "shipped"},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0, "quantity": 2, "status": "shipped"},
             {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0, "quantity": 3, "status": "shipped"},
         ]
     )
     stock = _stock([])
     issues = rule_missing_stock_out(orders, stock)
-    assert len(issues) == 1
-    assert issues[0].entity_id == "ORD-1"
-    assert issues[0].amount_impact == money("150.00")
+    assert len(issues) == 2
+    assert {i.entity_id for i in issues} == {"ORD-1:SKU-A", "ORD-1:SKU-B"}
+    # Only SKU-B gets an 'out' movement -> only SKU-A remains missing.
+    stock2 = _stock(
+        [
+            {
+                "movement_id": "M1",
+                "sku": "SKU-B",
+                "movement_type": "out",
+                "quantity": 3,
+                "movement_date": _dt("2026-06-01T09:00:00+00:00"),
+                "reference_order_id": "ORD-1",
+            }
+        ]
+    )
+    issues2 = rule_missing_stock_out(orders, stock2)
+    assert len(issues2) == 1
+    assert issues2[0].entity_id == "ORD-1:SKU-A"
+
+
+# ---------------------------------------------------------------------------
+# Fase 2a.1: grain invariants (persistence + multi-line correctness)
+# ---------------------------------------------------------------------------
+
+
+def test_multiline_order_persists_one_header_two_lines(dbsession):
+    """One Order header per order_id, N OrderLines — not N headers."""
+    orders = _orders(
+        [
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0},
+            {**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-B", "net_amount": 50.0},
+        ]
+    )
+    batch = ImportBatch(source_name="t", status="processing")
+    dbsession.add(batch)
+    dbsession.flush()
+    _persist_frames(dbsession, batch, orders, pd.DataFrame(), pd.DataFrame())
+    dbsession.commit()
+    headers = dbsession.query(Order).filter(Order.batch_id == batch.id).all()
+    lines = dbsession.query(OrderLine).filter(OrderLine.batch_id == batch.id).all()
+    assert len(headers) == 1
+    assert headers[0].order_id == "ORD-1"
+    assert len(lines) == 2
+    assert {l.sku for l in lines} == {"SKU-A", "SKU-B"}
+
+
+def test_multiline_order_total_orders_grain(client):
+    """Fase 2a.1 residual fix: total_orders counts headers, not order-line rows.
+
+    ORD-1 has 2 SKU lines (one header). The persisted Order table has 1 header /
+    2 lines; batch.total_orders and dashboard.total_orders must both be 1, not 2.
+    """
+    orders = (
+        "order_id,order_date,customer_name,customer_document_optional,channel,sku,product_name,"
+        "quantity,unit_price,gross_amount,discount_amount,net_amount,status\n"
+        "ORD-1,2026-06-01T10:00:00+00:00,Ana Silva,,Shopify,SKU-A,Item A,1,100,100,0,100,paid\n"
+        "ORD-1,2026-06-01T10:05:00+00:00,Ana Silva,,Shopify,SKU-B,Item B,1,50,50,0,50,paid\n"
+    )
+    payments = (
+        "payment_id,order_id,paid_at,amount,method,status,transaction_reference\n"
+        "PAY-1,ORD-1,2026-06-01T11:00:00+00:00,150,pix,paid,TX-1\n"
+    )
+    stock = (
+        "movement_id,sku,movement_type,quantity,movement_date,reference_order_id,notes\n"
+        "M1,SKU-A,out,1,2026-06-01T12:00:00+00:00,ORD-1,\n"
+        "M2,SKU-B,out,1,2026-06-01T12:05:00+00:00,ORD-1,\n"
+    )
+    files = {
+        "orders": ("orders.csv", orders, "text/csv"),
+        "payments": ("payments.csv", payments, "text/csv"),
+        "stock_movements": ("stock.csv", stock, "text/csv"),
+    }
+    uploaded = client.post("/api/imports", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    # 2 SKU lines, 1 header -> total_orders must be 1 (header grain), not 2.
+    assert body["batch"]["total_orders"] == 1
+    batch_id = body["batch"]["id"]
+    dash = client.get(f"/api/imports/{batch_id}/dashboard").json()
+    assert dash["total_orders"] == 1
+
+
+def test_same_order_id_across_batches_persists_both(dbsession):
+    """Same order_id re-imported in a different batch must not hit the unique constraint."""
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "sku": "SKU-A", "net_amount": 100.0}])
+    b1 = ImportBatch(source_name="t1", status="processing")
+    b2 = ImportBatch(source_name="t2", status="processing")
+    dbsession.add(b1)
+    dbsession.add(b2)
+    dbsession.flush()
+    # Would raise IntegrityError if uq_order_line / uq_order_header lacked batch_id.
+    _persist_frames(dbsession, b1, orders, pd.DataFrame(), pd.DataFrame())
+    _persist_frames(dbsession, b2, orders, pd.DataFrame(), pd.DataFrame())
+    dbsession.commit()
+    h1 = dbsession.query(Order).filter(Order.batch_id == b1.id).all()
+    h2 = dbsession.query(Order).filter(Order.batch_id == b2.id).all()
+    assert len(h1) == 1 and len(h2) == 1
+    assert {h.order_id for h in h1 + h2} == {"ORD-1"}
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +583,7 @@ def test_compute_kpis_missing_payment_invariant():
     assert kpi["reconciled_amount"] == money("0.00")
     assert kpi["pending_excluded_amount"] == ZERO
     assert kpi["eligible_amount"] == (
-        kpi["reconciled_amount"] + kpi["missing_payment_amount"]
-        + kpi["underpayment_amount"] + kpi["overpayment_amount"]
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"] + kpi["underpayment_amount"]
     )
 
 
@@ -477,8 +616,7 @@ def test_compute_kpis_underpayment_multiline_invariant():
     assert kpi["underpayment_amount"] == money("50.00")
     assert kpi["reconciled_amount"] == money("100.00")
     assert kpi["eligible_amount"] == (
-        kpi["reconciled_amount"] + kpi["missing_payment_amount"]
-        + kpi["underpayment_amount"] + kpi["overpayment_amount"]
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"] + kpi["underpayment_amount"]
     )
 
 
@@ -502,6 +640,38 @@ def test_compute_kpis_orphan_separate_from_eligible():
     # orphan is payments-side; eligible stays 0 and invariant holds trivially.
     assert kpi["eligible_amount"] == ZERO
     assert kpi["reconciled_amount"] == ZERO
+
+
+def test_overpayment_is_payment_side_exposure():
+    """Order net R$100 with payment R$110: fully matched (100), R$10 excess cash.
+
+    Overpayment is a payments-side exposure, NOT subtracted from the matched
+    order amount — reconciled must stay 100, not drop to 90.
+    """
+    orders = _orders([{**BASE_ORDER, "order_id": "ORD-1", "net_amount": 100.0, "status": "paid"}])
+    payments = _payments(
+        [
+            {
+                "payment_id": "PAY-1",
+                "order_id": "ORD-1",
+                "paid_at": _dt("2026-06-01T11:00:00+00:00"),
+                "amount": 110.0,
+                "method": "pix",
+                "status": "paid",
+            }
+        ]
+    )
+    issues = run_reconciliation(orders, payments, _stock([]))
+    kpi = compute_kpis(orders, payments, issues)
+    assert kpi["eligible_amount"] == money("100.00")
+    assert kpi["reconciled_amount"] == money("100.00")
+    assert kpi["missing_payment_amount"] == ZERO
+    assert kpi["underpayment_amount"] == ZERO
+    assert kpi["overpayment_amount"] == money("10.00")
+    # Invariant: eligible == reconciled + missing + under (over is separate).
+    assert kpi["eligible_amount"] == (
+        kpi["reconciled_amount"] + kpi["missing_payment_amount"] + kpi["underpayment_amount"]
+    )
 
 
 # ---------------------------------------------------------------------------

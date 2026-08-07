@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.reconciliation.engine import (
     MONEY_ISSUE_TYPES,
+    _mismatch_under_over,
     compute_kpis,
     run_reconciliation,
 )
@@ -35,6 +36,18 @@ from app.services.csv_validation import (
 )
 
 
+def _count_orders(orders_df: pd.DataFrame) -> int:
+    """Count distinct order headers, not order-line rows.
+
+    After Fase 2a.1, orders_df is at the order-line grain (one row per SKU), so
+    ``len(orders_df)`` overcounts. The header count is the number of unique
+    ``order_id`` values.
+    """
+    if orders_df is None or orders_df.empty:
+        return 0
+    return int(orders_df["order_id"].astype(str).nunique())
+
+
 def _persist_frames(
     db: Session,
     batch: ImportBatch,
@@ -42,43 +55,49 @@ def _persist_frames(
     payments_df: pd.DataFrame,
     stock_df: pd.DataFrame,
 ) -> None:
-    # Order is now a header; lines live on OrderLine (item grain). A single CSV
-    # row maps to one OrderLine. Multiple rows sharing an order_id map to
-    # multiple lines of the same order (future multi-line imports).
-    line_seq: dict[str, int] = {}
-    for _, row in orders_df.iterrows():
-        oid = str(row["order_id"])
-        seq = line_seq.get(oid, 0) + 1
-        line_seq[oid] = seq
-        db.add(
-            Order(
-                batch_id=batch.id,
-                order_id=oid,
-                order_date=to_naive_utc(row["order_date"]),
-                customer_name=str(row["customer_name"]),
-                customer_document_optional=(
-                    None
-                    if pd.isna(row.get("customer_document_optional"))
-                    else str(row.get("customer_document_optional"))
-                ),
-                channel=str(row["channel"]),
-                status=str(row["status"]),
+    # Order is a header; lines live on OrderLine (item grain). One CSV row maps
+    # to one OrderLine, but a header (Order) is persisted exactly once per
+    # (batch_id, order_id): the first row for an order_id wins the header
+    # attributes. Conflicting header attributes across rows of the same order
+    # are detected separately by rule_duplicate_order (header_conflict).
+    if not orders_df.empty:
+        seen_orders: set[str] = set()
+        line_seq: dict[str, int] = {}
+        for _, row in orders_df.iterrows():
+            oid = str(row["order_id"])
+            if oid not in seen_orders:
+                seen_orders.add(oid)
+                db.add(
+                    Order(
+                        batch_id=batch.id,
+                        order_id=oid,
+                        order_date=to_naive_utc(row["order_date"]),
+                        customer_name=str(row["customer_name"]),
+                        customer_document_optional=(
+                            None
+                            if pd.isna(row.get("customer_document_optional"))
+                            else str(row.get("customer_document_optional"))
+                        ),
+                        channel=str(row["channel"]),
+                        status=str(row["status"]),
+                    )
+                )
+            seq = line_seq.get(oid, 0) + 1
+            line_seq[oid] = seq
+            db.add(
+                OrderLine(
+                    batch_id=batch.id,
+                    order_id=oid,
+                    line_id=f"{oid}-L{seq}",
+                    sku=str(row["sku"]),
+                    product_name=str(row["product_name"]),
+                    quantity=int(row["quantity"]),
+                    unit_price=money(row["unit_price"]),
+                    gross_amount=money(row["gross_amount"]),
+                    discount_amount=money(row["discount_amount"]),
+                    net_amount=money(row["net_amount"]),
+                )
             )
-        )
-        db.add(
-            OrderLine(
-                batch_id=batch.id,
-                order_id=oid,
-                line_id=f"{oid}-L{seq}",
-                sku=str(row["sku"]),
-                product_name=str(row["product_name"]),
-                quantity=int(row["quantity"]),
-                unit_price=money(row["unit_price"]),
-                gross_amount=money(row["gross_amount"]),
-                discount_amount=money(row["discount_amount"]),
-                net_amount=money(row["net_amount"]),
-            )
-        )
     for _, row in payments_df.iterrows():
         db.add(
             Payment(
@@ -149,7 +168,7 @@ def process_import(
                 )
             )
 
-        batch.total_orders = int(len(orders_df))
+        batch.total_orders = _count_orders(orders_df)
         batch.total_payments = int(len(payments_df))
         batch.total_stock_movements = int(len(stock_df))
         batch.total_issues = len(drafts)
@@ -172,7 +191,7 @@ def process_import(
         failed = ImportBatch(
             source_name=source_name,
             status="failed",
-            total_orders=int(len(orders_df)),
+            total_orders=_count_orders(orders_df),
             total_payments=int(len(payments_df)),
             total_stock_movements=int(len(stock_df)),
         )
@@ -297,7 +316,8 @@ def _dashboard_from_data(
     Channel impact is restricted to MONEY_ISSUE_TYPES and deduped by
     (issue_type, entity_id), so it can never exceed unreconciled_amount
     (no financial double-counting). The KPI decomposition comes from
-    compute_kpis and satisfies eligible = reconciled + missing + under + over.
+    compute_kpis and satisfies eligible = reconciled + missing + under
+    (overpayment/orphan_payment are payments-side exposures, reported separately).
     """
     by_sev: dict[str, int] = {}
     by_type: dict[str, int] = {}
@@ -305,16 +325,23 @@ def _dashboard_from_data(
         by_sev[issue.severity] = by_sev.get(issue.severity, 0) + 1
         by_type[issue.issue_type] = by_type.get(issue.issue_type, 0) + 1
 
-    # Channel impact: MONEY_ISSUE_TYPES only, deduped. Invariant:
-    # sum(impact per channel) <= unreconciled_amount.
+    # Channel impact: MONEY_ISSUE_TYPES only, deduped, and EXCLUDING overpayment
+    # (payments-side, not an order-side shortfall). Invariant:
+    # sum(impact per channel) == unreconciled_amount (missing + under only).
     order_channel = (
         {str(o["order_id"]): str(o.get("channel", "")) for _, o in orders_df.iterrows()}
         if not orders_df.empty
         else {}
     )
+    open_statuses = {"open", "reviewing"}
+    mismatch_ids = {
+        str(i.entity_id)
+        for i in issues
+        if i.issue_type == "amount_mismatch" and i.status in open_statuses
+    }
+    under_by_order = _mismatch_under_over(orders_df, payments_df, mismatch_ids)
     channel_stats: dict[str, dict[str, Decimal]] = {}
     seen: set[tuple[str, str]] = set()
-    open_statuses = {"open", "reviewing"}
     for issue in issues:
         if issue.status not in open_statuses:
             continue
@@ -327,8 +354,14 @@ def _dashboard_from_data(
         channel = order_channel.get(str(issue.entity_id))
         if not channel:
             continue
+        if issue.issue_type == "amount_mismatch":
+            impact = under_by_order.get(str(issue.entity_id), (ZERO, ZERO))[0]
+        else:
+            impact = money(issue.amount_impact or 0)
+        if impact <= ZERO:
+            continue
         bucket = channel_stats.setdefault(channel, {"impact": ZERO, "issues": 0})
-        bucket["impact"] += money(issue.amount_impact or 0)
+        bucket["impact"] += impact
         bucket["issues"] += 1
 
     top_channels = sorted(
@@ -580,7 +613,7 @@ def _build_demo_payload() -> dict:
         source_name="demo:monthly_closing_2026_06",
         status="completed",
         created_at=DEMO_CLOSED_AT,
-        total_orders=int(len(orders_df)),
+        total_orders=_count_orders(orders_df),
         total_payments=int(len(payments_df)),
         total_stock_movements=int(len(stock_df)),
         total_issues=len(drafts),

@@ -19,10 +19,34 @@
 
 ### Verified
 - Backend pytest: **47 passed** (40 existentes + 7 novos).
-- `eligible == reconciled + missing + under + over` validado no dataset dourado (22478.5 = 21152.9 + 1179.1 + 146.5 + 0).
+- `eligible == reconciled + missing + under` validado no dataset dourado (22478.5 = 21152.9 + 1179.1 + 146.5). `overpayment`/`orphan_payment` são exposures payments-side (over=0 no dataset dourado) e ficam de fora do `eligible`.
 - `sum(impact por canal) == unreconciled_amount` (sem inflação) no dataset dourado (1325.6 = 1325.6).
-- IDs dourados preservados (missing_payment, orphan PAY-ORPH-1..3, amount_mismatch, duplicate, missing_stock_out, negative_stock SKU-MEI-09).
+- IDs dourados preservados (missing_payment, orphan PAY-ORPH-1..3, amount_mismatch, missing_stock_out, negative_stock SKU-MEI-09). Pedidos multiline ORD-0012/0039 passam a ser multiline legítimo (sem issue) sob o novo grain; `duplicate_line`/`header_conflict` substituem o antigo `duplicate_order` e não ocorrem no dataset dourado.
 - Frontend: `tsc --noEmit` limpo, `next lint` limpo, `vitest` 6 passed, `next build` ok.
+
+## Fase 2a.1 (2026-08) — Grain invariants (correção de modelagem pós-review)
+
+### Added
+- 6 testes obrigatórios de correção de grain/invariante: `test_legitimate_multiline_order_no_duplicate`, `test_duplicate_line_detected`, `test_header_conflict_detected`, `test_multiline_order_persists_one_header_two_lines`, `test_same_order_id_across_batches_persists_both`, `test_multiline_order_missing_stock_out_per_sku`, `test_overpayment_is_payment_side_exposure`.
+- Helper `_mismatch_under_over(orders, payments, order_ids)` → `(under, over)` por pedido (deriva o split de `amount_mismatch`).
+
+### Changed
+- `rule_duplicate_order` → 3 saídas: `header_conflict` (alta), `duplicate_line` (alta), ou multiline legítimo (sem issue). Antigo `duplicate_order` removido.
+- `rule_missing_stock_out` no grain `(order_id, sku)`: 1 issue por SKU sem `out` (`entity_id="{oid}:{sku}"`, `entity_type="order_line"`).
+- Persistência: **1 `Order` por `(batch_id, order_id)`** (1ª linha vence o header) + N `OrderLine`; antes 1 `Order` por linha CSV.
+- Constraints únicas incluem `batch_id`: `uq_order_header(batch_id, order_id)`, `uq_order_line(batch_id, order_id, line_id)`.
+- `compute_kpis`: invariante corrigido para `eligible = reconciled + missing + under`; `overpayment`/`orphan_payment` são exposures payments-side (fora do `eligible`).
+- Dashboard (impacto por canal): exclui overpayment — `amount_mismatch` conta só a parcela **under**.
+- Front (`lib/utils.ts`): labels `duplicate_line: "Linha duplicada"`, `header_conflict: "Conflito de cabeçalho"`.
+- `total_orders` agora no grain de header: `int(orders_df["order_id"].nunique())` nos 3 caminhos (batch concluído, batch `failed`, demo stateless). Antes `int(len(orders_df))` sobrecontava (contava linhas de pedido, não cabeçalhos).
+- `compute_amounts` removido: função legada com definição contraditória de `reconciled` (ainda subtraía overpayment do conciliado) e sem call site relevante. `compute_kpis` é a única fonte financeira.
+
+### Verified
+- Backend pytest: **52 passed** (47 da Fase 2a + 5 líquidos de 2a.1).
+- `eligible == reconciled + missing + under` no dataset dourado (22478.5 = 21152.9 + 1179.1 + 146.5); over=0.
+- `test_overpayment_is_payment_side_exposure`: pedido 100 / pago 110 → `reconciled=100`, `overpayment_amount=10` (invariante sem over).
+- `test_multiline_order_total_orders_grain`: upload multiline (2 SKUs) → `batch.total_orders == 1` e `dashboard.total_orders == 1` (não 2). `compute_amounts` removido (sem call site); backend segue **52 passed**.
+- Frontend: `tsc`/`lint`/`vitest`(6) verdes; `next build` delegado à CI (ENOSPC local).
 
 ## Added
 

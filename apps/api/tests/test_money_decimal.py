@@ -1,11 +1,11 @@
-"""Regression tests for Decimal money helpers and compute_amounts."""
+"""Regression tests for Decimal money helpers."""
 
 from decimal import Decimal
 
 import pandas as pd
 
 from app.core.money import AMOUNT_TOLERANCE, money
-from app.reconciliation.engine import IssueDraft, compute_amounts, rule_amount_mismatch
+from app.reconciliation.engine import IssueDraft, rule_amount_mismatch
 
 
 def test_money_avoids_binary_float_trap():
@@ -45,32 +45,3 @@ def test_amount_mismatch_tolerance_is_decimal():
     assert issues[0].amount_impact > AMOUNT_TOLERANCE
 
 
-def test_compute_amounts_quantizes_and_dedupes():
-    orders = pd.DataFrame([{"order_id": "A", "net_amount": "10.10"}, {"order_id": "B", "net_amount": "20.20"}])
-    drafts = [
-        IssueDraft(
-            issue_type="missing_payment",
-            severity="high",
-            entity_type="order",
-            entity_id="A",
-            title="t",
-            description="d",
-            recommended_action="a",
-            amount_impact=money("10.10"),
-        ),
-        IssueDraft(
-            issue_type="missing_payment",
-            severity="high",
-            entity_type="order",
-            entity_id="A",
-            title="t2",
-            description="d",
-            recommended_action="a",
-            amount_impact=money("10.10"),
-        ),
-    ]
-    total, reconciled, unreconciled = compute_amounts(orders, pd.DataFrame(), drafts)
-    assert total == money("30.30")
-    assert unreconciled == money("10.10")
-    assert reconciled == money("20.20")
-    assert isinstance(total, Decimal)

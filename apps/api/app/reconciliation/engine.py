@@ -166,40 +166,88 @@ def rule_amount_mismatch(orders: pd.DataFrame, payments: pd.DataFrame) -> list[I
     return issues
 
 
+def _header_key(row: pd.Series) -> tuple:
+    """Canonical key of order-level (header) attributes used for conflict detection."""
+    order_date = row["order_date"]
+    try:
+        order_date = pd.Timestamp(order_date).isoformat()
+    except Exception:  # noqa: BLE001
+        order_date = str(order_date)
+    return (
+        str(row["customer_name"]).strip().lower(),
+        str(row.get("customer_document_optional", None) or "").strip().lower(),
+        str(row["channel"]).strip().lower(),
+        str(row["status"]).strip().lower(),
+        order_date,
+    )
+
+
+def _line_key(row: pd.Series) -> tuple:
+    """Canonical key of item-level (line) attributes used for duplicate detection."""
+    return (
+        str(row["sku"]).strip().lower(),
+        str(row["product_name"]).strip().lower(),
+        int(row["quantity"]),
+        str(money(row["unit_price"])),
+        str(money(row["gross_amount"])),
+        str(money(row["discount_amount"])),
+        str(money(row["net_amount"])),
+    )
+
+
 def rule_duplicate_order(orders: pd.DataFrame) -> list[IssueDraft]:
+    """Classify repeated order_ids at item grain.
+
+    Three outcomes per order_id with >1 line:
+    - header_conflict: conflicting customer/channel/status/date across rows -> high.
+    - duplicate_line: at least one line repeated verbatim -> high.
+    - legitimate multi-line: consistent header + distinct lines -> valid (no issue).
+    """
     issues: list[IssueDraft] = []
     if orders.empty:
         return issues
-    grouped = orders.groupby("order_id")
-    for oid, group in grouped:
+    for oid, group in orders.groupby("order_id"):
         if len(group) <= 1:
             continue
-        skus = set(group["sku"].astype(str))
-        nets = {money(x) for x in group["net_amount"]}
-        inconsistent = len(skus) > 1 or len(nets) > 1
-        if not inconsistent and len(group) > 1:
-            severity = "medium"
-            desc = f"order_id '{oid}' aparece {len(group)} vezes com os mesmos valores."
-        else:
-            severity = "high"
-            desc = (
-                f"order_id '{oid}' aparece {len(group)} vezes com SKUs/valores inconsistentes "
-                f"(SKUs={sorted(skus)}, nets={sorted(str(n) for n in nets)})."
+        oid = str(oid)
+        header_keys = {_header_key(r) for _, r in group.iterrows()}
+        line_keys = [_line_key(r) for _, r in group.iterrows()]
+        distinct_lines = set(line_keys)
+        if len(header_keys) > 1:
+            issues.append(
+                IssueDraft(
+                    issue_type="header_conflict",
+                    severity="high",
+                    entity_type="order",
+                    entity_id=oid,
+                    title=f"Conflito de cabeçalho no pedido {oid}",
+                    description=(
+                        f"order_id '{oid}' aparece com atributos de cabeçalho conflitantes "
+                        f"(cliente/canal/status/data): {len(header_keys)} variantes."
+                    ),
+                    recommended_action="Revisar exportação: um mesmo order_id deve ter identidade única.",
+                    amount_impact=ZERO,
+                    channel=str(group.iloc[0].get("channel", "")),
+                )
             )
-        impact = money_sum([money(x) for x in group["net_amount"].tolist()])
-        issues.append(
-            IssueDraft(
-                issue_type="duplicate_order",
-                severity=severity,
-                entity_type="order",
-                entity_id=str(oid),
-                title=f"Pedido duplicado {oid}",
-                description=desc,
-                recommended_action="Verificar duplicidade de exportação.",
-                amount_impact=impact,
-                channel=str(group.iloc[0].get("channel", "")),
+        elif len(distinct_lines) < len(line_keys):
+            issues.append(
+                IssueDraft(
+                    issue_type="duplicate_line",
+                    severity="high",
+                    entity_type="order",
+                    entity_id=oid,
+                    title=f"Linha duplicada no pedido {oid}",
+                    description=(
+                        f"order_id '{oid}' tem {len(line_keys) - len(distinct_lines)} "
+                        f"linha(s) idêntica(s) repetida(s) (mesmo SKU/valor)."
+                    ),
+                    recommended_action="Remover linha duplicada da exportação do pedido.",
+                    amount_impact=ZERO,
+                    channel=str(group.iloc[0].get("channel", "")),
+                )
             )
-        )
+        # else: consistent header + distinct lines => legitimate multi-line order (valid).
     return issues
 
 
@@ -218,28 +266,28 @@ def rule_missing_stock_out(orders: pd.DataFrame, stock: pd.DataFrame) -> list[Is
             sku = str(row.get("sku") or "")
             if ref:
                 out_keys.add((ref, sku))
-    # Order grain: expected qty/net = sum of the order's lines.
-    grp = fulfilled.groupby("order_id", as_index=False).agg(
+    # (order_id, sku) grain: expected qty/net = sum of that SKU's lines.
+    grp = fulfilled.groupby(["order_id", "sku"], as_index=False).agg(
         quantity=("quantity", "sum"),
         net_amount=("net_amount", "sum"),
-        sku=("sku", "first"),
         channel=("channel", "first"),
         status=("status", "first"),
     )
     for _, row in grp.iterrows():
         oid = str(row["order_id"])
-        key = (oid, str(row["sku"]))
+        sku = str(row["sku"])
+        key = (oid, sku)
         if key not in out_keys:
             impact = money(row["net_amount"])
             issues.append(
                 IssueDraft(
                     issue_type="missing_stock_out",
                     severity="medium",
-                    entity_type="order",
-                    entity_id=oid,
-                    title=f"Pedido {oid} sem baixa de estoque",
+                    entity_type="order_line",
+                    entity_id=f"{oid}:{sku}",
+                    title=f"Pedido {oid} (SKU {sku}) sem baixa de estoque",
                     description=(
-                        f"Pedido {row['status']} do SKU {row['sku']} (qtd {int(row['quantity'])}) "
+                        f"Pedido {row['status']} do SKU {sku} (qtd {int(row['quantity'])}) "
                         "não possui movimento 'out' vinculado ao order_id."
                     ),
                     recommended_action="Revisar baixa de estoque.",
@@ -340,36 +388,43 @@ def run_reconciliation(
     return drafts
 
 
-def compute_amounts(
+def _mismatch_under_over(
     orders: pd.DataFrame,
     payments: pd.DataFrame,
-    issues: Iterable[IssueDraft],
-) -> tuple[Decimal, Decimal, Decimal]:
-    """Return (total, reconciled, unreconciled) as quantized Decimals.
+    order_ids: Iterable[str],
+) -> dict[str, tuple[Decimal, Decimal]]:
+    """Return {order_id: (under, over)} for the supplied order_ids with amount mismatch.
 
-    `payments` is accepted for signature stability; amounts come from orders + money issues.
+    `under` = net exceeds paid (order shortfall); `over` = paid exceeds net
+    (excess cash). Both are magnitude-only; the caller decides the accounting
+    bucket (over is payments-side, not subtracted from eligible).
     """
-    del payments  # unused — kept for call-site compatibility
-    if orders.empty:
-        total_amount = ZERO
-    else:
-        total_amount = money_sum([money(v) for v in orders["net_amount"].tolist()])
-
-    unreconciled = ZERO
-    seen: set[tuple[str, str]] = set()
-    for issue in issues:
-        if issue.issue_type not in MONEY_ISSUE_TYPES:
+    result: dict[str, tuple[Decimal, Decimal]] = {}
+    ids = set(order_ids)
+    if not ids or orders.empty or payments.empty:
+        return result
+    approved = _approved_payments(payments)
+    if approved.empty:
+        return result
+    pay_sum = approved.groupby("order_id", as_index=False)["amount"].sum().rename(
+        columns={"amount": "paid_sum"}
+    )
+    order_net = orders.groupby("order_id", as_index=False)["net_amount"].sum()
+    merged = order_net.merge(pay_sum, on="order_id", how="inner")
+    for _, row in merged.iterrows():
+        oid = str(row["order_id"])
+        if oid not in ids:
             continue
-        key = (issue.issue_type, issue.entity_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        unreconciled += money(issue.amount_impact)
-    unreconciled = money(unreconciled)
-    if total_amount > ZERO:
-        unreconciled = min(unreconciled, total_amount)
-    reconciled = money(max(total_amount - unreconciled, ZERO))
-    return total_amount, reconciled, unreconciled
+        net = money(row["net_amount"])
+        paid = money(row["paid_sum"])
+        diff = net - paid
+        if diff > AMOUNT_TOLERANCE:
+            result[oid] = (money(diff), ZERO)
+        elif -diff > AMOUNT_TOLERANCE:
+            result[oid] = (ZERO, money(-diff))
+        else:
+            result[oid] = (ZERO, ZERO)
+    return result
 
 
 def compute_kpis(
@@ -381,9 +436,11 @@ def compute_kpis(
 
     Base = fulfilled orders (paid/shipped). Canceled/returned/created are
     `pending_excluded` and live outside the reconciliation base.
-    Invariant: eligible = reconciled + missing + under + over.
-    `orphan_payment` is payments-side (money received without an order) and is
-    reported separately, never subtracted from eligible.
+    Invariant: eligible = reconciled + missing + under.
+    `overpayment` and `orphan_payment` are payments-side exposures (money
+    received in excess of / without an order) and are reported separately, never
+    subtracted from eligible. An overpaid order is fully matched (its net amount
+    is covered); only the excess cash is an exposure.
     Under/over are derived from the data for OPEN amount_mismatch order_ids so
     the split stays consistent with the live issue set.
     """
@@ -430,27 +487,15 @@ def compute_kpis(
 
     under = ZERO
     over = ZERO
-    if mismatch_order_ids and not orders.empty and not payments.empty:
-        approved = _approved_payments(payments)
-        if not approved.empty:
-            pay_sum = approved.groupby("order_id", as_index=False)["amount"].sum().rename(
-                columns={"amount": "paid_sum"}
-            )
-            order_net = orders.groupby("order_id", as_index=False)["net_amount"].sum()
-            merged = order_net.merge(pay_sum, on="order_id", how="inner")
-            for _, row in merged.iterrows():
-                oid = str(row["order_id"])
-                if oid not in mismatch_order_ids:
-                    continue
-                net = money(row["net_amount"])
-                paid = money(row["paid_sum"])
-                diff = net - paid
-                if diff > AMOUNT_TOLERANCE:
-                    under += money(diff)
-                elif -diff > AMOUNT_TOLERANCE:
-                    over += money(-diff)
+    if mismatch_order_ids:
+        split = _mismatch_under_over(orders, payments, mismatch_order_ids)
+        for u, o in split.values():
+            under += u
+            over += o
 
-    unreconciled = money(missing + under + over)
+    # Overpayment is payments-side exposure: it does NOT reduce the matched
+    # (reconciled) order amount. unreconciled is the order-side shortfall only.
+    unreconciled = money(missing + under)
     reconciled = money(max(eligible - unreconciled, ZERO))
     return {
         "eligible_amount": eligible,

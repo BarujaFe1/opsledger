@@ -213,7 +213,10 @@ def generate(seed: int = 42) -> None:
             )
         amount_mismatch_ids.append(oid)
 
-    # 4) Duplicate order (2 inconsistent)
+    # 4) Multi-line order (2 SKUs) — demonstrates the item grain. Under the
+    #    order/line model these two rows for the same order_id are a VALID
+    #    multi-line order, not a duplicate (duplicate_line/header_conflict are
+    #    exercised by the test suite instead).
     for src_oid, dup_oid in [("ORD-0012", "ORD-0012"), ("ORD-0039", "ORD-0039")]:
         src = next(o for o in orders if o["order_id"] == src_oid)
         dup = dict(src)
