@@ -37,6 +37,10 @@ STOCK_REQUIRED = [
     "movement_date",
 ]
 
+# Payment kinds accepted on import. `amount` is always the positive magnitude;
+# the cash-flow sign is derived from `kind` in the reconciliation engine.
+PAYMENT_KINDS = {"payment", "refund", "chargeback"}
+
 
 class CsvValidationError(Exception):
     def __init__(self, message: str, code: str = "csv_validation_error"):
@@ -101,10 +105,27 @@ def validate_payments(path_or_buffer: Any) -> pd.DataFrame:
     _require_columns(df, PAYMENT_REQUIRED, "payments")
     if "transaction_reference" not in df.columns:
         df["transaction_reference"] = None
+    # `kind` is optional and defaults to "payment" (retrocompatible with CSVs
+    # that predate refunds/chargebacks support).
+    if "kind" not in df.columns:
+        df["kind"] = "payment"
+    df["kind"] = df["kind"].astype(str).str.lower().str.strip()
+    df["kind"] = df["kind"].replace({"": "payment", "nan": "payment"})
+    bad_kinds = sorted(set(df["kind"].unique()) - PAYMENT_KINDS)
+    if bad_kinds:
+        raise CsvValidationError(
+            f"kind de pagamento inválido: {', '.join(bad_kinds)}. Use: {', '.join(sorted(PAYMENT_KINDS))}.",
+            code="invalid_payment_kind",
+        )
     df["paid_at"] = _parse_datetime_series(df["paid_at"], "paid_at")
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     if df["amount"].isna().any():
         raise CsvValidationError("Valores numéricos inválidos em payments.", code="invalid_number")
+    if (df["amount"] < 0).any():
+        raise CsvValidationError(
+            "Valor negativo em payments. Use 'amount' positivo e 'kind' (refund/chargeback) para saída de caixa.",
+            code="negative_amount",
+        )
     df["status"] = df["status"].astype(str).str.lower().str.strip()
     df["method"] = df["method"].astype(str).str.lower().str.strip()
     df["order_id"] = df["order_id"].astype(str).str.strip()

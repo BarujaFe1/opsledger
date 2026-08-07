@@ -52,6 +52,9 @@ export function issueTypeLabel(type: string): string {
     missing_stock_out: "Baixa de estoque ausente",
     negative_stock: "Estoque negativo",
     channel_standardization: "Canal não padronizado",
+    refund_without_payment: "Reembolso sem pagamento",
+    over_refund: "Reembolso acima do recebido",
+    chargeback: "Chargeback",
   };
   return map[type] || type;
 }
@@ -63,6 +66,8 @@ export const FINANCIAL_ISSUE_TYPES = new Set<string>([
   "amount_mismatch",
   "duplicate_line",
   "header_conflict",
+  "refund_without_payment",
+  "over_refund",
 ]);
 
 export function isFinancialIssueType(type: string): boolean {

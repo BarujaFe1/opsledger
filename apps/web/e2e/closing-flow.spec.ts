@@ -34,6 +34,15 @@ test("monthly closing demo: ingest → dashboard → issues → issue → report
   await expect(page.getByRole("heading", { name: /Fechamento operacional/i })).toBeVisible();
   await expect(page.getByText(/Valor em divergência/i)).toBeVisible();
 
+  // Fase 2b.1: cash-realization KPIs (refund/chargeback dimension) must render
+  // alongside the payment-matching KPIs and must NOT reduce reconciled/under.
+  // `.first()` disambiguates each KPI label from the explanatory helper paragraph
+  // (rendered later in the DOM) which repeats the same terms.
+  await expect(page.getByText(/Recebido bruto/i).first()).toBeVisible();
+  await expect(page.getByText(/Reembolsado/i).first()).toBeVisible();
+  await expect(page.getByText(/Chargeback \(exposição\)/i).first()).toBeVisible();
+  await expect(page.getByText(/Caixa líquido/i).first()).toBeVisible();
+
   // Issues register
   await page.getByTestId("link-issues").click();
   await expect(page).toHaveURL(/\/batches\/-?\d+\/issues/);
@@ -58,4 +67,8 @@ test("monthly closing demo: ingest → dashboard → issues → issue → report
   await expect(page.getByTestId("executive-report")).toBeVisible();
   await expect(page.getByText(/Relatório executivo/i)).toBeVisible();
   await expect(page.locator("[data-testid=executive-report]")).toContainText(/Batch|Issues|OpsLedger|fechamento/i);
+
+  // Fase 2b.1: the executive report must surface the cash-realization section.
+  await expect(page.locator("[data-testid=executive-report]")).toContainText(/Realização de caixa/i);
+  await expect(page.locator("[data-testid=executive-report]")).toContainText(/Reembolsado/i);
 });

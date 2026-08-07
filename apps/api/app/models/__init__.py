@@ -106,6 +106,9 @@ class Payment(Base):
     method: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), index=True)
     transaction_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    # Payment kind drives netting: "payment" (cash in), "refund" / "chargeback" (cash out).
+    # amount is ALWAYS the positive magnitude; the sign comes from KIND_SIGN in the engine.
+    kind: Mapped[str] = mapped_column(String(16), default="payment", index=True)
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="payments")
 

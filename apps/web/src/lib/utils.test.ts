@@ -12,6 +12,12 @@ describe("issueTypeLabel", () => {
   it("maps known types", () => {
     expect(issueTypeLabel("missing_payment")).toBe("Pagamento ausente");
   });
+
+  it("maps refund / chargeback types (Fase 2b.1)", () => {
+    expect(issueTypeLabel("refund_without_payment")).toBe("Reembolso sem pagamento");
+    expect(issueTypeLabel("over_refund")).toBe("Reembolso acima do recebido");
+    expect(issueTypeLabel("chargeback")).toBe("Chargeback");
+  });
 });
 
 describe("severityClass", () => {
@@ -66,11 +72,16 @@ describe("issueImpactLabel", () => {
     expect(issueImpactLabel("amount_mismatch")).toBe("Impacto financeiro");
     expect(issueImpactLabel("duplicate_line")).toBe("Impacto financeiro");
     expect(issueImpactLabel("header_conflict")).toBe("Impacto financeiro");
+    // Fase 2b.1 — financial refund anomalies
+    expect(issueImpactLabel("refund_without_payment")).toBe("Impacto financeiro");
+    expect(issueImpactLabel("over_refund")).toBe("Impacto financeiro");
   });
 
   it("labels stock / data-quality issues as 'Valor associado'", () => {
     expect(issueImpactLabel("missing_stock_out")).toBe("Valor associado");
     expect(issueImpactLabel("negative_stock")).toBe("Valor associado");
     expect(issueImpactLabel("channel_standardization")).toBe("Valor associado");
+    // Fase 2b.1 — chargeback is operational (nets, not a financial divergence)
+    expect(issueImpactLabel("chargeback")).toBe("Valor associado");
   });
 });

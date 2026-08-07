@@ -14,6 +14,7 @@ from app.core.money import (
     money,
     money_sum,
 )
+from app.services.csv_validation import PAYMENT_KINDS
 
 CHANNEL_ALIASES = {
     "whatsapp": "WhatsApp",
@@ -32,7 +33,28 @@ CHANNEL_ALIASES = {
 
 APPROVED_PAYMENT_STATUSES = {"paid"}
 FULFILLED_ORDER_STATUSES = {"paid", "shipped"}
-MONEY_ISSUE_TYPES = {"missing_payment", "orphan_payment", "amount_mismatch"}
+# Issue types that drive the PAYMENT-MATCHING KPI decomposition
+# (eligible = reconciled + missing + under). Refunds and chargebacks are NOT
+# here: they belong to the separate CASH-REALIZATION dimension
+# (net_cash = gross_paid - refunds - active_chargebacks) and must never
+# retroactively mark an order as underpaid. They keep their own issue types
+# (refund_without_payment / over_refund / chargeback) and are labeled financial
+# vs operational via FINANCIAL_ISSUE_TYPES in import_service.
+MONEY_ISSUE_TYPES = {
+    "missing_payment",
+    "orphan_payment",
+    "amount_mismatch",
+}
+
+# Cash-flow sign per payment kind. `amount` is always the positive magnitude;
+# refunds/chargebacks reduce realized revenue (negative sign).
+KIND_SIGN = {"payment": 1, "refund": -1, "chargeback": -1}
+# Status(es) under which each kind is considered "settled" (counts in netting).
+SETTLED_STATUS_BY_KIND = {
+    "payment": {"paid"},
+    "refund": {"refunded"},
+    "chargeback": {"charged_back"},
+}
 
 
 @dataclass
@@ -57,6 +79,38 @@ def _approved_payments(payments: pd.DataFrame) -> pd.DataFrame:
     if payments.empty:
         return payments
     return payments[payments["status"].astype(str).str.lower().isin(APPROVED_PAYMENT_STATUSES)].copy()
+
+
+def _netting_payments(payments: pd.DataFrame) -> pd.DataFrame:
+    """Return settled payment/refund/chargeback rows with a `signed_amount`.
+
+    A row is "settled" when its (kind, status) pair is in SETTLED_STATUS_BY_KIND.
+    `signed_amount = KIND_SIGN[kind] * amount` so the resulting frame can be
+    summed directly to obtain net cash flow per order. Rows whose `kind` is
+    missing/blank default to "payment" (legacy CSVs without the column).
+    """
+    if payments.empty:
+        return payments
+    df = payments.copy()
+    if "kind" not in df.columns:
+        df["kind"] = "payment"
+    df["kind"] = (
+        df["kind"].astype(str).str.lower().str.strip().replace({"": "payment", "nan": "payment"})
+    )
+    df["status_norm"] = df["status"].astype(str).str.lower().str.strip()
+
+    def _is_settled(row: pd.Series) -> bool:
+        kind = str(row["kind"])
+        if kind not in SETTLED_STATUS_BY_KIND:
+            return False
+        return str(row["status_norm"]) in SETTLED_STATUS_BY_KIND[kind]
+
+    settled = df[df.apply(_is_settled, axis=1)].copy()
+    if not settled.empty:
+        settled["signed_amount"] = settled.apply(
+            lambda r: KIND_SIGN.get(str(r["kind"]), 1) * money(r["amount"]), axis=1
+        )
+    return settled
 
 
 def rule_missing_payment(orders: pd.DataFrame, payments: pd.DataFrame) -> list[IssueDraft]:
@@ -371,6 +425,112 @@ def rule_channel_standardization(orders: pd.DataFrame) -> list[IssueDraft]:
     return issues
 
 
+def rule_refund_anomalies(orders: pd.DataFrame, payments: pd.DataFrame) -> list[IssueDraft]:
+    """Detect refund/chargeback anomalies. Regular (well-explained) refunds and
+    chargebacks stay SILENT here — they only net the KPIs via compute_kpis. Only
+    the following anomalies become issues:
+
+    - refund_without_payment (FINANCIAL): a settled refund/chargeback exists for
+      an order that has no settled payment at all. The business gave money back
+      it never collected.
+    - over_refund (FINANCIAL): total refunded/charged back exceeds total paid for
+      the order (amount_impact = refund_sum - paid_gross).
+    - chargeback (OPERACIONAL — "valor associado"): a settled chargeback exists
+      for an order that also has a settled payment. It nets the KPIs but is
+      labeled as an operational/risk fact, not a financial divergence.
+    """
+    issues: list[IssueDraft] = []
+    if orders.empty or payments.empty:
+        return issues
+    settled = _netting_payments(payments)
+    if settled.empty:
+        return issues
+    fulfilled = orders[orders["status"].astype(str).str.lower().isin(FULFILLED_ORDER_STATUSES)]
+    if fulfilled.empty:
+        return issues
+    order_net = fulfilled.groupby("order_id")["net_amount"].sum()
+    order_channel = fulfilled.groupby("order_id")["channel"].first()
+
+    # Per-order magnitude sums by kind.
+    per_order: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: {"paid": ZERO, "refund": ZERO, "chargeback": ZERO}
+    )
+    for _, row in settled.iterrows():
+        oid = str(row["order_id"])
+        kind = str(row["kind"])
+        amt = money(row["amount"])
+        if kind == "payment":
+            per_order[oid]["paid"] += amt
+        elif kind in ("refund", "chargeback"):
+            per_order[oid]["refund"] += amt
+            if kind == "chargeback":
+                per_order[oid]["chargeback"] += amt
+
+    for oid, net in order_net.items():
+        oid = str(oid)
+        info = per_order.get(oid)
+        if not info or info["refund"] <= ZERO:
+            continue
+        paid_gross = info["paid"]
+        refund_sum = info["refund"]
+        channel = str(order_channel.get(oid, "") or "")
+        if paid_gross <= ZERO:
+            impact = money(refund_sum)
+            issues.append(
+                IssueDraft(
+                    issue_type="refund_without_payment",
+                    severity="high",
+                    entity_type="order",
+                    entity_id=oid,
+                    title=f"Reembolso sem pagamento no pedido {oid}",
+                    description=(
+                        f"Pedido com valor líquido R$ {money(net):.2f} possui reembolso/chargeback "
+                        f"liquidado de R$ {impact:.2f} mas nenhum pagamento liquidado."
+                    ),
+                    recommended_action="Verificar estorno, gateway ou pedido cancelado indevidamente.",
+                    amount_impact=impact,
+                    channel=channel,
+                )
+            )
+        elif refund_sum > paid_gross:
+            impact = money(refund_sum - paid_gross)
+            issues.append(
+                IssueDraft(
+                    issue_type="over_refund",
+                    severity="high",
+                    entity_type="order",
+                    entity_id=oid,
+                    title=f"Reembolso acima do recebido no pedido {oid}",
+                    description=(
+                        f"Total reembolsado/chargeback de R$ {money(refund_sum):.2f} excede o recebido "
+                        f"de R$ {money(paid_gross):.2f} (excesso R$ {impact:.2f})."
+                    ),
+                    recommended_action="Revisar política de reembolso e possível fraude.",
+                    amount_impact=impact,
+                    channel=channel,
+                )
+            )
+        if info["chargeback"] > ZERO:
+            issues.append(
+                IssueDraft(
+                    issue_type="chargeback",
+                    severity="medium",
+                    entity_type="order",
+                    entity_id=oid,
+                    title=f"Chargeback no pedido {oid}",
+                    description=(
+                        f"Pedido com valor líquido R$ {money(net):.2f} teve chargeback liquidado de "
+                        f"R$ {money(info['chargeback']):.2f} (reduz o realizado, mas é tratado como "
+                        "fato operacional)."
+                    ),
+                    recommended_action="Acionar disputa de chargeback junto à operadora.",
+                    amount_impact=money(info["chargeback"]),
+                    channel=channel,
+                )
+            )
+    return issues
+
+
 def run_reconciliation(
     orders: pd.DataFrame,
     payments: pd.DataFrame,
@@ -385,6 +545,7 @@ def run_reconciliation(
     drafts.extend(rule_missing_stock_out(orders, stock))
     drafts.extend(rule_negative_stock(stock))
     drafts.extend(rule_channel_standardization(orders))
+    drafts.extend(rule_refund_anomalies(orders, payments))
     return drafts
 
 
@@ -424,6 +585,48 @@ def _mismatch_under_over(
             result[oid] = (ZERO, money(-diff))
         else:
             result[oid] = (ZERO, ZERO)
+    return result
+
+
+def _cash_realization(payments: pd.DataFrame) -> dict[str, Decimal]:
+    """CASH-REALIZATION dimension (separate from PAYMENT MATCHING).
+
+    Refunds and chargebacks are posterior cash reversals, not original-order
+    coverage gaps, so they must NOT reduce `reconciled` or inflate `under`.
+    They live here:
+
+        gross_paid           = sum of settled normal payments (kind=payment)
+        refunded_amount      = sum of settled refunds (kind=refund)
+        active_chargeback_amount = sum of settled chargebacks (kind=chargeback)
+                                   — current EXPOSURE, not necessarily a realized loss
+        net_cash_amount      = gross_paid - refunded_amount - active_chargeback_amount
+
+    net_cash can go negative when refunds/chargebacks exceed what was collected
+    (e.g. refund_without_payment / over_refund) — that is the honest cash truth.
+    """
+    result = {
+        "gross_paid_amount": ZERO,
+        "refunded_amount": ZERO,
+        "active_chargeback_amount": ZERO,
+        "net_cash_amount": ZERO,
+    }
+    if payments.empty:
+        return result
+    settled = _netting_payments(payments)
+    if settled.empty:
+        return result
+    for _, row in settled.iterrows():
+        kind = str(row["kind"])
+        amt = money(row["amount"])
+        if kind == "payment":
+            result["gross_paid_amount"] += amt
+        elif kind == "refund":
+            result["refunded_amount"] += amt
+        elif kind == "chargeback":
+            result["active_chargeback_amount"] += amt
+    result["net_cash_amount"] = (
+        result["gross_paid_amount"] - result["refunded_amount"] - result["active_chargeback_amount"]
+    )
     return result
 
 
@@ -493,10 +696,15 @@ def compute_kpis(
             under += u
             over += o
 
-    # Overpayment is payments-side exposure: it does NOT reduce the matched
-    # (reconciled) order amount. unreconciled is the order-side shortfall only.
+    # PAYMENT-MATCHING invariant: eligible == reconciled + missing + under.
+    # Refunds/chargebacks deliberately do NOT enter `under` — they are a separate
+    # cash-realization fact (see _cash_realization), not an original-coverage gap.
     unreconciled = money(missing + under)
     reconciled = money(max(eligible - unreconciled, ZERO))
+
+    # CASH-REALIZATION dimension (independent of the matching invariant above).
+    cash = _cash_realization(payments)
+
     return {
         "eligible_amount": eligible,
         "reconciled_amount": reconciled,
@@ -505,5 +713,9 @@ def compute_kpis(
         "underpayment_amount": under,
         "overpayment_amount": over,
         "orphan_payment_amount": orphan,
+        "gross_paid_amount": cash["gross_paid_amount"],
+        "refunded_amount": cash["refunded_amount"],
+        "active_chargeback_amount": cash["active_chargeback_amount"],
+        "net_cash_amount": cash["net_cash_amount"],
         "pending_excluded_amount": pending_excluded,
     }

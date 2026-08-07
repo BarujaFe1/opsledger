@@ -99,6 +99,10 @@ class DashboardOut(BaseModel):
     underpayment_amount: float = 0.0
     overpayment_amount: float = 0.0
     orphan_payment_amount: float = 0.0
+    gross_paid_amount: float = 0.0
+    refunded_amount: float = 0.0
+    active_chargeback_amount: float = 0.0
+    net_cash_amount: float = 0.0
     pending_excluded_amount: float = 0.0
     total_issues: int
     open_issues_count: int = 0
