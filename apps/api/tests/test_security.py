@@ -13,6 +13,9 @@ Covers the Fase 1 (P0) hardening controls:
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -356,7 +359,7 @@ def test_local_export_csv_sanitizes_all_fields():
     """Gate 4: every field written to a CSV export (local AND public) must be
     formula-injection sanitized, including free-text and identifier columns
     (title, description, recommendation, amount, note, entity id)."""
-    from app.api.routes import _csv_response
+    from app.api.routes import CSV_FIELDS, _csv_response
 
     rows = [
         {
@@ -379,6 +382,36 @@ def test_local_export_csv_sanitizes_all_fields():
     ]
     resp = _csv_response(rows, batch_id=-1)
     content = asyncio.run(_drain_stream(resp.body_iterator))
+
+    # The stream must actually carry the header + the one data row.
+    assert content, "CSV export stream is empty"
+    record = list(csv.DictReader(io.StringIO(content)))
+    assert len(record) == 1
+    record = record[0]
+
+    # Every formula-trigger cell is neutralized with a leading apostrophe,
+    # including free-text, identifiers and numeric-looking values.
+    assert record["entity_id"] == "'=cmd|calc"
+    assert record["title"] == "'+Suspicious"
+    assert record["description"] == "'-drop table"
+    assert record["recommended_action"] == "'@evil"
+    assert record["amount_impact"] == "'=2+2"
+    assert record["resolution_note"] == "'=shell"
+    assert record["batch_id"] == "'-1"  # str(-1) starts with a trigger char
+
+    # Benign cells pass through untouched.
+    assert record["id"] == "1"
+    assert record["issue_type"] == "payment_divergence"
+    assert record["severity"] == "high"
+    assert record["status"] == "open"
+    assert record["created_at"] == "2026-06-30"
+    assert record["resolved_at"] == ""
+
+    # Global invariant: no exported cell starts with a formula trigger.
+    for field in CSV_FIELDS:
+        assert record[field] == "" or not record[field].startswith(
+            ("=", "+", "-", "@", "\t", "\r", "\n")
+        ), f"unsanitized formula trigger in {field}"
 
 
 async def _drain_stream(body_iterator) -> str:
