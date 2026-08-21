@@ -14,7 +14,7 @@ CSV (demo/upload)
   → validação de schema
   → ImportBatch
   → Order / Payment / StockMovement
-  → engine (7 regras) → ReconciliationIssue
+  → engine (8 funções de regra, até 11 issue types) → ReconciliationIssue
   → dashboard / issues / status / CSV / relatório
 ```
 

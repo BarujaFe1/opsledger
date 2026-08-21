@@ -10,7 +10,7 @@ Aplicação full-stack que cruza pedidos, pagamentos e estoque, detecta divergê
 
 ## Descrição média
 
-OpsLedger transforma planilhas bagunçadas de operação em um batch reconciliado: valida CSVs, executa sete regras de qualidade/financeiro/estoque, exibe KPIs executivos, permite investigar e atualizar issues, exportar CSV e gerar relatório de fechamento. Demo local com dados sintéticos realistas, sem dependências externas obrigatórias.
+OpsLedger transforma planilhas bagunçadas de operação em um batch reconciliado: valida CSVs, executa 8 funções de regra de qualidade/financeiro/estoque (até 11 issue types), exibe KPIs executivos, permite investigar e atualizar issues, exportar CSV e gerar relatório de fechamento. Demo local com dados sintéticos realistas, sem dependências externas obrigatórias.
 
 ## Descrição longa
 
@@ -22,7 +22,7 @@ O projeto evidencia raciocínio de produto, modelagem de dados, qualidade de dad
 
 ## Bullets de impacto
 
-- 7 regras de reconciliação cobertas por testes unitários
+- 8 funções de regra de reconciliação cobertas por testes unitários (até 11 issue types)
 - Demo com ~150 pedidos e 15–30 divergências intencionais
 - Dashboard com valor conciliado vs. em divergência e próxima melhor ação
 - Fluxo completo: import → issues → status → export CSV → relatório

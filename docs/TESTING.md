@@ -4,7 +4,7 @@
 
 | Camada | Ferramenta | Onde | O que cobre |
 |--------|------------|------|-------------|
-| Unit (domínio) | Pytest | `apps/api/tests/` | 7 regras + Decimal money + happy path |
+| Unit (domínio) | Pytest | `apps/api/tests/` | 8 funções de regra (até 11 issue types) + Decimal money + happy path |
 | API | Pytest + TestClient | mesmo | health, demo, dashboard, patch status, report, 404 |
 | Unit (UI helpers) | Vitest | `apps/web/src/lib/*.test.ts` | formatação, labels, parse de IDs |
 | E2E | Playwright | `apps/web/e2e/` | home → demo → dashboard → issues → relatório |

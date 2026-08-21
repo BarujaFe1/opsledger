@@ -187,7 +187,7 @@ CSV Parsing + Schema Validation
   ↓
 ImportBatch persistence (SQLite, local mode)
   ↓
-Reconciliation Engine (7 rules)
+Reconciliation Engine (8 rule functions → up to 11 issue types)
   ↓
 Issue materialization + amount impact
   ↓
@@ -255,7 +255,7 @@ cd apps/api
 .venv\Scripts\python -m pytest -q
 ```
 
-Cobertura mínima: 7 regras da engine + `/api/health` + `/api/demo/run`.
+Escopo mínimo testado: as 8 funções de regra da engine (que emitem até 11 issue types; o demo golden exercita 9) + `/api/health` + `/api/demo/run`.
 
 ```bash
 # Frontend (Vitest + Playwright + typecheck + lint + build)

@@ -69,7 +69,7 @@ export default function HomePage() {
           },
           {
             title: "Reconcilia com regras",
-            body: "Sete regras testáveis cobrem pagamento ausente, órfão, valor, duplicidade, estoque e canal.",
+            body: "8 funções de regra testáveis cobrem pagamento ausente, órfão, valor, duplicidade, estoque, canal e anomalias de reembolso/chargeback.",
           },
           {
             title: "Orienta a revisão",
